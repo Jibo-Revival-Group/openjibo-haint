@@ -138,41 +138,93 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._handle_command(payload)
             return
 
+    async def _send_command_result(
+        self,
+        request_id: str | None,
+        status: str,
+        *,
+        matched_name: str | None = None,
+        heard_name: str | None = None,
+        candidates: list[dict[str, str]] | None = None,
+        message: str | None = None,
+    ) -> None:
+        if not request_id:
+            return
+
+        payload: dict[str, Any] = {
+            "type": "command_result",
+            "requestId": request_id,
+            "status": status,
+        }
+        if matched_name:
+            payload["matchedName"] = matched_name
+        if heard_name:
+            payload["heardName"] = heard_name
+        if candidates:
+            payload["candidates"] = candidates
+        if message:
+            payload["message"] = message
+
+        sent = await self._client.async_send_json(payload)
+        if not sent:
+            _LOGGER.warning("Failed to send command_result for request %s", request_id)
+
     async def _handle_command(self, payload: dict[str, Any]) -> None:
         command = payload.get("command")
-        if command == "lights_off_current_room":
-            await self._handle_lights_room("turn_off")
-            return
+        request_id = payload.get("requestId")
 
-        if command == "lights_on_current_room":
-            await self._handle_lights_room("turn_on")
-            return
+        try:
+            if command == "lights_off_current_room":
+                await self._handle_lights_room("turn_off")
+                await self._send_command_result(request_id, "ok")
+                return
 
-        if command == "lights_off_named":
-            await self._handle_lights_named("turn_off", payload.get("targetName"))
-            return
+            if command == "lights_on_current_room":
+                await self._handle_lights_room("turn_on")
+                await self._send_command_result(request_id, "ok")
+                return
 
-        if command == "lights_on_named":
-            await self._handle_lights_named("turn_on", payload.get("targetName"))
-            return
+            if command == "lights_off_named":
+                await self._handle_lights_named("turn_off", payload.get("targetName"), request_id)
+                return
 
-        if command == "climate_set_temperature_current_room":
-            await self._handle_climate_room_set_temp(payload.get("temperature"))
-            return
+            if command == "lights_on_named":
+                await self._handle_lights_named("turn_on", payload.get("targetName"), request_id)
+                return
 
-        if command == "climate_set_temperature_named":
-            await self._handle_climate_named_set_temp(payload.get("targetName"), payload.get("temperature"))
-            return
+            if command == "climate_set_temperature_current_room":
+                await self._handle_climate_room_set_temp(payload.get("temperature"), request_id)
+                return
 
-        if command == "climate_cool_down_current_room":
-            await self._handle_climate_room_adjust(-self._parse_delta(payload.get("delta")))
-            return
+            if command == "climate_set_temperature_named":
+                await self._handle_climate_named_set_temp(
+                    payload.get("targetName"), payload.get("temperature"), request_id
+                )
+                return
 
-        if command == "climate_warm_up_current_room":
-            await self._handle_climate_room_adjust(self._parse_delta(payload.get("delta")))
-            return
+            if command == "climate_cool_down_current_room":
+                await self._handle_climate_room_adjust(
+                    -self._parse_delta(payload.get("delta")), request_id
+                )
+                return
 
-        _LOGGER.warning("OpenJibo server sent unknown command: %s", command)
+            if command == "climate_warm_up_current_room":
+                await self._handle_climate_room_adjust(
+                    self._parse_delta(payload.get("delta")), request_id
+                )
+                return
+
+            if command == "climate_apply_entity":
+                await self._handle_climate_apply_entity(payload, request_id)
+                return
+
+            _LOGGER.warning("OpenJibo server sent unknown command: %s", command)
+            await self._send_command_result(
+                request_id, "error", message=f"unknown command: {command}"
+            )
+        except Exception as err:  # noqa: BLE001 - report failure to cloud
+            _LOGGER.exception("OpenJibo command %s failed: %s", command, err)
+            await self._send_command_result(request_id, "error", message=str(err))
 
     async def _handle_lights_room(self, service: str) -> None:
         area_id = self._get_jibo_area_id()
@@ -186,15 +238,33 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         _LOGGER.info("Called light.%s for area %s", service, area_id)
 
-    async def _handle_lights_named(self, service: str, target_name: str | None) -> None:
+    async def _handle_lights_named(
+        self,
+        service: str,
+        target_name: str | None,
+        request_id: str | None = None,
+    ) -> None:
+        heard_name = (target_name or "").strip() or "that light"
         if not target_name:
             _LOGGER.warning("OpenJibo named light command missing targetName")
+            await self._send_command_result(
+                request_id, "not_found", heard_name=heard_name
+            )
             return
 
         area_id = self._get_jibo_area_id()
+        if area_id is None:
+            await self._send_command_result(
+                request_id, "not_found", heard_name=heard_name
+            )
+            return
+
         entity_id = self._find_matching_light(target_name, area_id)
         if entity_id is None:
-            _LOGGER.warning("No light matched target %r", target_name)
+            _LOGGER.warning("No light matched target %r in area %s", target_name, area_id)
+            await self._send_command_result(
+                request_id, "not_found", heard_name=heard_name
+            )
             return
 
         await self.hass.services.async_call(
@@ -202,73 +272,214 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             service,
             {"entity_id": entity_id},
         )
-        _LOGGER.info("Called light.%s for entity %s (target %r)", service, entity_id, target_name)
+        matched_name = self._friendly_name(entity_id)
+        _LOGGER.info(
+            "Called light.%s for entity %s (target %r -> %s)",
+            service,
+            entity_id,
+            target_name,
+            matched_name,
+        )
+        await self._send_command_result(
+            request_id, "ok", matched_name=matched_name, heard_name=heard_name
+        )
 
-    async def _handle_climate_room_set_temp(self, temperature: Any) -> None:
+    async def _handle_climate_room_set_temp(
+        self, temperature: Any, request_id: str | None = None
+    ) -> None:
         from homeassistant.helpers import entity_registry as er
 
         parsed_temperature = self._parse_temperature(temperature)
         if parsed_temperature is None:
             _LOGGER.warning("OpenJibo climate set command missing valid temperature")
+            await self._send_command_result(
+                request_id, "error", message="missing temperature"
+            )
             return
 
-        area_id = self._get_jibo_area_id()
-        if area_id is None:
+        resolution = self._resolve_room_climate_entities(er.async_get(self.hass))
+        if resolution["status"] == "not_found":
+            await self._send_command_result(request_id, "not_found")
+            return
+        if resolution["status"] == "needs_clarification":
+            await self._send_command_result(
+                request_id,
+                "needs_clarification",
+                candidates=resolution["candidates"],
+            )
             return
 
-        entity_ids = self._list_climate_entity_ids(er.async_get(self.hass), area_id)
-        if not entity_ids:
-            _LOGGER.warning("No climate entities found for area %s", area_id)
-            return
-
+        entity_ids = resolution["entity_ids"]
         for entity_id in entity_ids:
             await self._set_climate_temperature(entity_id, parsed_temperature)
 
-        _LOGGER.info(
-            "Set climate temperature for area %s to %s across %s entities",
-            area_id,
-            parsed_temperature,
-            len(entity_ids),
+        matched_name = (
+            self._friendly_name(entity_ids[0]) if len(entity_ids) == 1 else None
+        )
+        await self._send_command_result(
+            request_id, "ok", matched_name=matched_name
         )
 
-    async def _handle_climate_named_set_temp(self, target_name: str | None, temperature: Any) -> None:
+    async def _handle_climate_named_set_temp(
+        self,
+        target_name: str | None,
+        temperature: Any,
+        request_id: str | None = None,
+    ) -> None:
         if not target_name:
             _LOGGER.warning("OpenJibo named climate command missing targetName")
+            await self._send_command_result(
+                request_id, "not_found", heard_name=target_name or "that thermostat"
+            )
             return
 
         parsed_temperature = self._parse_temperature(temperature)
         if parsed_temperature is None:
             _LOGGER.warning("OpenJibo named climate command missing valid temperature")
+            await self._send_command_result(
+                request_id, "error", message="missing temperature"
+            )
             return
 
         area_id = self._get_jibo_area_id()
         entity_id = self._find_matching_climate(target_name, area_id)
         if entity_id is None:
             _LOGGER.warning("No climate entity matched target %r", target_name)
+            await self._send_command_result(
+                request_id, "not_found", heard_name=target_name
+            )
             return
 
         await self._set_climate_temperature(entity_id, parsed_temperature)
-        _LOGGER.info(
-            "Called climate.set_temperature for entity %s to %s (target %r)",
-            entity_id,
-            parsed_temperature,
-            target_name,
+        matched_name = self._friendly_name(entity_id)
+        await self._send_command_result(
+            request_id, "ok", matched_name=matched_name, heard_name=target_name
         )
 
-    async def _handle_climate_room_adjust(self, delta: float) -> None:
+    async def _handle_climate_room_adjust(
+        self, delta: float, request_id: str | None = None
+    ) -> None:
         from homeassistant.helpers import entity_registry as er
 
-        area_id = self._get_jibo_area_id()
-        if area_id is None:
+        resolution = self._resolve_room_climate_entities(er.async_get(self.hass))
+        if resolution["status"] == "not_found":
+            await self._send_command_result(request_id, "not_found")
+            return
+        if resolution["status"] == "needs_clarification":
+            await self._send_command_result(
+                request_id,
+                "needs_clarification",
+                candidates=resolution["candidates"],
+            )
             return
 
-        entity_ids = self._list_climate_entity_ids(er.async_get(self.hass), area_id)
-        if not entity_ids:
-            _LOGGER.warning("No climate entities found for area %s", area_id)
-            return
-
+        entity_ids = resolution["entity_ids"]
         for entity_id in entity_ids:
             await self._adjust_climate_entity(entity_id, delta)
+
+        matched_name = (
+            self._friendly_name(entity_ids[0]) if len(entity_ids) == 1 else None
+        )
+        await self._send_command_result(
+            request_id, "ok", matched_name=matched_name
+        )
+
+    async def _handle_climate_apply_entity(
+        self, payload: dict[str, Any], request_id: str | None = None
+    ) -> None:
+        entity_id = payload.get("entityId")
+        if not entity_id or not isinstance(entity_id, str):
+            await self._send_command_result(
+                request_id, "error", message="missing entityId"
+            )
+            return
+
+        action = str(payload.get("action") or "").lower()
+        if action == "set_temperature":
+            parsed_temperature = self._parse_temperature(payload.get("temperature"))
+            if parsed_temperature is None:
+                await self._send_command_result(
+                    request_id, "error", message="missing temperature"
+                )
+                return
+            await self._set_climate_temperature(entity_id, parsed_temperature)
+        elif action == "cool_down":
+            await self._adjust_climate_entity(
+                entity_id, -self._parse_delta(payload.get("delta"))
+            )
+        elif action == "warm_up":
+            await self._adjust_climate_entity(
+                entity_id, self._parse_delta(payload.get("delta"))
+            )
+        else:
+            await self._send_command_result(
+                request_id, "error", message=f"unknown action: {action}"
+            )
+            return
+
+        await self._send_command_result(
+            request_id, "ok", matched_name=self._friendly_name(entity_id)
+        )
+
+    def _resolve_room_climate_entities(self, entity_registry: Any) -> dict[str, Any]:
+        area_id = self._get_jibo_area_id()
+        if area_id is None:
+            return {"status": "not_found", "entity_ids": [], "candidates": []}
+
+        room_entities = self._list_climate_entity_ids(entity_registry, area_id)
+        if room_entities:
+            return {
+                "status": "ok",
+                "entity_ids": room_entities,
+                "candidates": [],
+            }
+
+        floor_entities = self._list_climate_entity_ids_on_floor(entity_registry, area_id)
+        if not floor_entities:
+            return {"status": "not_found", "entity_ids": [], "candidates": []}
+        if len(floor_entities) == 1:
+            return {
+                "status": "ok",
+                "entity_ids": floor_entities,
+                "candidates": [],
+            }
+
+        candidates = [
+            {"entityId": entity_id, "name": self._friendly_name(entity_id)}
+            for entity_id in floor_entities
+        ]
+        return {
+            "status": "needs_clarification",
+            "entity_ids": [],
+            "candidates": candidates,
+        }
+
+    def _list_climate_entity_ids_on_floor(
+        self, entity_registry: Any, area_id: str
+    ) -> list[str]:
+        from homeassistant.helpers import area_registry as ar
+        from homeassistant.helpers import device_registry as dr
+
+        area_reg = ar.async_get(self.hass)
+        area = area_reg.async_get_area(area_id)
+        if area is None or not area.floor_id:
+            return []
+
+        floor_area_ids = {
+            entry.id
+            for entry in ar.async_entries_for_floor(area_reg, area.floor_id)
+        }
+        device_registry = dr.async_get(self.hass)
+        candidates: list[str] = []
+        for entity in entity_registry.entities.values():
+            if entity.domain != "climate":
+                continue
+            entity_area_id = self._resolve_entity_area_id(
+                entity_registry, device_registry, entity
+            )
+            if entity_area_id in floor_area_ids:
+                candidates.append(entity.entity_id)
+        return candidates
 
     async def _adjust_climate_entity(self, entity_id: str, delta: float) -> None:
         state = self.hass.states.get(entity_id)
@@ -370,6 +581,12 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         _LOGGER.info("Set climate entity %s hvac_mode to %s (was %s)", entity_id, mode, current_mode)
 
+    def _friendly_name(self, entity_id: str) -> str:
+        state = self.hass.states.get(entity_id)
+        if state is not None and state.name:
+            return str(state.name)
+        return entity_id
+
     def _get_jibo_area_id(self) -> str | None:
         from homeassistant.helpers import device_registry as dr
         from homeassistant.helpers import entity_registry as er
@@ -413,19 +630,11 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         entity_registry = er.async_get(self.hass)
         normalized_target = _normalize_light_name(target_name)
-        if not normalized_target:
+        if not normalized_target or area_id is None:
             return None
 
         area_candidates = self._list_light_entity_ids(entity_registry, area_id)
-        match = self._match_light_entity(normalized_target, area_candidates)
-        if match is not None:
-            return match
-
-        if area_id is not None:
-            all_candidates = self._list_light_entity_ids(entity_registry, None)
-            return self._match_light_entity(normalized_target, all_candidates)
-
-        return None
+        return self._match_light_entity(normalized_target, area_candidates)
 
     def _list_light_entity_ids(
         self,
@@ -451,6 +660,7 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _match_light_entity(self, normalized_target: str, entity_ids: list[str]) -> str | None:
         exact_match: str | None = None
         partial_match: str | None = None
+        best_fuzzy: tuple[int, float, str] | None = None
 
         for entity_id in entity_ids:
             state = self.hass.states.get(entity_id)
@@ -469,7 +679,22 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ) and partial_match is None:
                 partial_match = entity_id
 
-        return exact_match or partial_match
+            distance = _levenshtein_distance(normalized_target, normalized_friendly)
+            max_len = max(len(normalized_target), len(normalized_friendly), 1)
+            similarity = 1.0 - (distance / max_len)
+            threshold = max(2, len(normalized_target) // 3)
+            if distance <= threshold or similarity >= 0.55:
+                candidate = (distance, -similarity, entity_id)
+                if best_fuzzy is None or candidate < best_fuzzy:
+                    best_fuzzy = candidate
+
+        if exact_match is not None:
+            return exact_match
+        if partial_match is not None:
+            return partial_match
+        if best_fuzzy is not None:
+            return best_fuzzy[2]
+        return None
 
     def _find_matching_climate(self, target_name: str, area_id: str | None) -> str | None:
         from homeassistant.helpers import entity_registry as er
@@ -573,3 +798,42 @@ def _normalize_climate_name(value: str) -> str:
         if normalized.endswith(suffix):
             normalized = normalized[: -len(suffix)].strip()
     return normalized
+
+
+def _levenshtein_distance(left: str, right: str) -> int:
+    if left == right:
+        return 0
+    if not left:
+        return len(right)
+    if not right:
+        return len(left)
+
+    previous = list(range(len(right) + 1))
+    for i, left_char in enumerate(left, start=1):
+        current = [i]
+        for j, right_char in enumerate(right, start=1):
+            insert_cost = current[j - 1] + 1
+            delete_cost = previous[j] + 1
+            replace_cost = previous[j - 1] + (0 if left_char == right_char else 1)
+            current.append(min(insert_cost, delete_cost, replace_cost))
+        previous = current
+    return previous[-1]
+
+
+def _names_are_close(target: str, candidate: str) -> bool:
+    normalized_target = target.lower().strip()
+    normalized_candidate = candidate.lower().strip()
+    if not normalized_target or not normalized_candidate:
+        return False
+    if (
+        normalized_target == normalized_candidate
+        or normalized_target in normalized_candidate
+        or normalized_candidate in normalized_target
+    ):
+        return True
+
+    distance = _levenshtein_distance(normalized_target, normalized_candidate)
+    max_len = max(len(normalized_target), len(normalized_candidate), 1)
+    similarity = 1.0 - (distance / max_len)
+    threshold = max(2, len(normalized_target) // 3)
+    return distance <= threshold or similarity >= 0.55

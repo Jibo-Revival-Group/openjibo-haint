@@ -80,6 +80,13 @@ class OpenJiboWebSocketClient:
         if self._ws is not None and not self._ws.closed:
             await self._ws.close()
 
+    async def async_send_json(self, payload: dict[str, Any]) -> bool:
+        if self._ws is None or self._ws.closed:
+            return False
+
+        await self._ws.send_json(payload)
+        return True
+
     async def _run(self) -> None:
         backoff = 1
         while not self._stop_event.is_set():
