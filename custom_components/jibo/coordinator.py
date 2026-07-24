@@ -38,6 +38,8 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._handle_message,
             entry.data.get(CONF_LINK_ID),
         )
+        self._blacklist_heat = False
+        self._blacklist_cool = False
 
     @property
     def connected(self) -> bool:
@@ -193,28 +195,33 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return
 
             if command == "climate_set_temperature_current_room":
+                self._apply_blacklist_from_payload(payload)
                 await self._handle_climate_room_set_temp(payload.get("temperature"), request_id)
                 return
 
             if command == "climate_set_temperature_named":
+                self._apply_blacklist_from_payload(payload)
                 await self._handle_climate_named_set_temp(
                     payload.get("targetName"), payload.get("temperature"), request_id
                 )
                 return
 
             if command == "climate_cool_down_current_room":
+                self._apply_blacklist_from_payload(payload)
                 await self._handle_climate_room_adjust(
                     -self._parse_delta(payload.get("delta")), request_id
                 )
                 return
 
             if command == "climate_warm_up_current_room":
+                self._apply_blacklist_from_payload(payload)
                 await self._handle_climate_room_adjust(
                     self._parse_delta(payload.get("delta")), request_id
                 )
                 return
 
             if command == "climate_apply_entity":
+                self._apply_blacklist_from_payload(payload)
                 await self._handle_climate_apply_entity(payload, request_id)
                 return
 
@@ -526,6 +533,13 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         target_temp: float,
         preferred_mode: str | None = None,
     ) -> str | None:
+        blacklist_heat, blacklist_cool = self._hvac_blacklist()
+        if blacklist_heat and blacklist_cool:
+            _LOGGER.info(
+                "Skipping HVAC mode change; heating and cooling are both blacklisted"
+            )
+            return None
+
         supported = {
             str(mode).lower()
             for mode in (state.attributes.get("hvac_modes") or [])
@@ -534,10 +548,19 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not supported:
             return None
 
+        allow_heat_cool = not blacklist_heat and not blacklist_cool
+
         def pick(candidate: str) -> str | None:
+            candidate = candidate.lower()
+            if candidate == "heat" and blacklist_heat:
+                _LOGGER.info("Skipping HVAC mode heat; heating is blacklisted")
+                return None
+            if candidate == "cool" and blacklist_cool:
+                _LOGGER.info("Skipping HVAC mode cool; cooling is blacklisted")
+                return None
             if candidate in supported:
                 return candidate
-            if "heat_cool" in supported:
+            if allow_heat_cool and "heat_cool" in supported:
                 return "heat_cool"
             return None
 
@@ -546,18 +569,27 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         current_temp = state.attributes.get("current_temperature")
         if current_temp is None:
-            return pick("heat_cool") if "heat_cool" in supported else None
+            return pick("heat_cool") if allow_heat_cool and "heat_cool" in supported else None
 
         try:
             current_value = float(current_temp)
         except (TypeError, ValueError):
-            return pick("heat_cool") if "heat_cool" in supported else None
+            return pick("heat_cool") if allow_heat_cool and "heat_cool" in supported else None
 
         if target_temp > current_value:
             return pick("heat")
         if target_temp < current_value:
             return pick("cool")
         return None
+
+    def _hvac_blacklist(self) -> tuple[bool, bool]:
+        return self._blacklist_heat, self._blacklist_cool
+
+    def _apply_blacklist_from_payload(self, payload: dict[str, Any]) -> None:
+        if "blacklistHeat" in payload:
+            self._blacklist_heat = _parse_bool(payload.get("blacklistHeat"))
+        if "blacklistCool" in payload:
+            self._blacklist_cool = _parse_bool(payload.get("blacklistCool"))
 
     async def _ensure_hvac_mode(self, entity_id: str, mode: str) -> None:
         state = self.hass.states.get(entity_id)
@@ -828,6 +860,15 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return float(value)
         except (TypeError, ValueError):
             return _DEFAULT_CLIMATE_DELTA
+
+
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "on"}
 
 
 def _normalize_light_name(value: str) -> str:
