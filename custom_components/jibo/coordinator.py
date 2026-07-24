@@ -205,6 +205,8 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _LOGGER.info("Called light.%s for entity %s (target %r)", service, entity_id, target_name)
 
     async def _handle_climate_room_set_temp(self, temperature: Any) -> None:
+        from homeassistant.helpers import entity_registry as er
+
         parsed_temperature = self._parse_temperature(temperature)
         if parsed_temperature is None:
             _LOGGER.warning("OpenJibo climate set command missing valid temperature")
@@ -214,13 +216,20 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if area_id is None:
             return
 
-        await self.hass.services.async_call(
-            "climate",
-            "set_temperature",
-            {"temperature": parsed_temperature},
-            target={"area_id": [area_id]},
+        entity_ids = self._list_climate_entity_ids(er.async_get(self.hass), area_id)
+        if not entity_ids:
+            _LOGGER.warning("No climate entities found for area %s", area_id)
+            return
+
+        for entity_id in entity_ids:
+            await self._set_climate_temperature(entity_id, parsed_temperature)
+
+        _LOGGER.info(
+            "Set climate temperature for area %s to %s across %s entities",
+            area_id,
+            parsed_temperature,
+            len(entity_ids),
         )
-        _LOGGER.info("Called climate.set_temperature for area %s to %s", area_id, parsed_temperature)
 
     async def _handle_climate_named_set_temp(self, target_name: str | None, temperature: Any) -> None:
         if not target_name:
@@ -238,11 +247,7 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning("No climate entity matched target %r", target_name)
             return
 
-        await self.hass.services.async_call(
-            "climate",
-            "set_temperature",
-            {"entity_id": entity_id, "temperature": parsed_temperature},
-        )
+        await self._set_climate_temperature(entity_id, parsed_temperature)
         _LOGGER.info(
             "Called climate.set_temperature for entity %s to %s (target %r)",
             entity_id,
@@ -285,12 +290,85 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if max_temp is not None:
             new_temp = min(float(max_temp), new_temp)
 
+        preferred_mode = "cool" if delta < 0 else "heat" if delta > 0 else None
+        await self._set_climate_temperature(entity_id, new_temp, preferred_mode=preferred_mode)
+        _LOGGER.info("Adjusted climate entity %s from %s to %s", entity_id, current, new_temp)
+
+    async def _set_climate_temperature(
+        self,
+        entity_id: str,
+        temperature: float,
+        preferred_mode: str | None = None,
+    ) -> None:
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in {"unavailable", "unknown"}:
+            _LOGGER.warning("Climate entity %s unavailable for temperature set", entity_id)
+            return
+
+        mode = self._resolve_hvac_mode_for_target(state, temperature, preferred_mode)
+        if mode is not None:
+            await self._ensure_hvac_mode(entity_id, mode)
+
         await self.hass.services.async_call(
             "climate",
             "set_temperature",
-            {"entity_id": entity_id, "temperature": new_temp},
+            {"entity_id": entity_id, "temperature": temperature},
         )
-        _LOGGER.info("Adjusted climate entity %s from %s to %s", entity_id, current, new_temp)
+
+    def _resolve_hvac_mode_for_target(
+        self,
+        state: Any,
+        target_temp: float,
+        preferred_mode: str | None = None,
+    ) -> str | None:
+        supported = {
+            str(mode).lower()
+            for mode in (state.attributes.get("hvac_modes") or [])
+            if mode is not None
+        }
+        if not supported:
+            return None
+
+        def pick(candidate: str) -> str | None:
+            if candidate in supported:
+                return candidate
+            if "heat_cool" in supported:
+                return "heat_cool"
+            return None
+
+        if preferred_mode:
+            return pick(preferred_mode.lower())
+
+        current_temp = state.attributes.get("current_temperature")
+        if current_temp is None:
+            return pick("heat_cool") if "heat_cool" in supported else None
+
+        try:
+            current_value = float(current_temp)
+        except (TypeError, ValueError):
+            return pick("heat_cool") if "heat_cool" in supported else None
+
+        if target_temp > current_value:
+            return pick("heat")
+        if target_temp < current_value:
+            return pick("cool")
+        return None
+
+    async def _ensure_hvac_mode(self, entity_id: str, mode: str) -> None:
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return
+
+        current_mode = str(state.state).lower()
+        if current_mode == mode.lower():
+            return
+
+        await self.hass.services.async_call(
+            "climate",
+            "set_hvac_mode",
+            {"entity_id": entity_id, "hvac_mode": mode},
+        )
+        _LOGGER.info("Set climate entity %s hvac_mode to %s (was %s)", entity_id, mode, current_mode)
 
     def _get_jibo_area_id(self) -> str | None:
         from homeassistant.helpers import device_registry as dr
