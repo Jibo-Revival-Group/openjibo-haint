@@ -253,15 +253,9 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         area_id = self._get_jibo_area_id()
-        if area_id is None:
-            await self._send_command_result(
-                request_id, "not_found", heard_name=heard_name
-            )
-            return
-
         entity_id = self._find_matching_light(target_name, area_id)
         if entity_id is None:
-            _LOGGER.warning("No light matched target %r in area %s", target_name, area_id)
+            _LOGGER.warning("No light matched target %r (jibo area %s)", target_name, area_id)
             await self._send_command_result(
                 request_id, "not_found", heard_name=heard_name
             )
@@ -630,11 +624,31 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         entity_registry = er.async_get(self.hass)
         normalized_target = _normalize_light_name(target_name)
-        if not normalized_target or area_id is None:
+        if not normalized_target:
             return None
 
-        area_candidates = self._list_light_entity_ids(entity_registry, area_id)
-        return self._match_light_entity(normalized_target, area_candidates)
+        # House-wide search; same-room and same-floor only affect ranking.
+        all_candidates = self._list_light_entity_ids(entity_registry, None)
+        floor_area_ids = self._floor_area_ids_for_area(area_id) if area_id else set()
+        return self._match_light_entity(
+            normalized_target,
+            all_candidates,
+            preferred_area_id=area_id,
+            preferred_floor_area_ids=floor_area_ids,
+        )
+
+    def _floor_area_ids_for_area(self, area_id: str) -> set[str]:
+        from homeassistant.helpers import area_registry as ar
+
+        area_reg = ar.async_get(self.hass)
+        area = area_reg.async_get_area(area_id)
+        if area is None or not area.floor_id:
+            return set()
+
+        return {
+            entry.id
+            for entry in ar.async_entries_for_floor(area_reg, area.floor_id)
+        }
 
     def _list_light_entity_ids(
         self,
@@ -657,10 +671,46 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             candidates.append(entity.entity_id)
         return candidates
 
-    def _match_light_entity(self, normalized_target: str, entity_ids: list[str]) -> str | None:
-        exact_match: str | None = None
-        partial_match: str | None = None
-        best_fuzzy: tuple[int, float, str] | None = None
+    def _light_location_bonus(
+        self,
+        entity_id: str,
+        preferred_area_id: str | None,
+        preferred_floor_area_ids: set[str],
+    ) -> float:
+        """Medium room boost, mild same-floor boost."""
+        if preferred_area_id is None:
+            return 0.0
+
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers import entity_registry as er
+
+        entity_registry = er.async_get(self.hass)
+        entity = entity_registry.async_get(entity_id)
+        if entity is None:
+            return 0.0
+
+        entity_area_id = self._resolve_entity_area_id(
+            entity_registry, dr.async_get(self.hass), entity
+        )
+        if entity_area_id is None:
+            return 0.0
+        if entity_area_id == preferred_area_id:
+            return 0.25  # medium: same room
+        if entity_area_id in preferred_floor_area_ids:
+            return 0.10  # mild: same floor
+        return 0.0
+
+    def _match_light_entity(
+        self,
+        normalized_target: str,
+        entity_ids: list[str],
+        preferred_area_id: str | None = None,
+        preferred_floor_area_ids: set[str] | None = None,
+    ) -> str | None:
+        floor_ids = preferred_floor_area_ids or set()
+        best: tuple[float, int, str] | None = None
+        # Sort key: (-score, distance, entity_id) so higher score wins;
+        # distance breaks ties toward closer name matches.
 
         for entity_id in entity_ids:
             state = self.hass.states.get(entity_id)
@@ -669,32 +719,32 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if not normalized_friendly:
                 continue
 
-            if normalized_friendly == normalized_target:
-                exact_match = entity_id
-                break
-
-            if (
-                normalized_target in normalized_friendly
-                or normalized_friendly in normalized_target
-            ) and partial_match is None:
-                partial_match = entity_id
-
             distance = _levenshtein_distance(normalized_target, normalized_friendly)
             max_len = max(len(normalized_target), len(normalized_friendly), 1)
             similarity = 1.0 - (distance / max_len)
             threshold = max(2, len(normalized_target) // 3)
-            if distance <= threshold or similarity >= 0.55:
-                candidate = (distance, -similarity, entity_id)
-                if best_fuzzy is None or candidate < best_fuzzy:
-                    best_fuzzy = candidate
 
-        if exact_match is not None:
-            return exact_match
-        if partial_match is not None:
-            return partial_match
-        if best_fuzzy is not None:
-            return best_fuzzy[2]
-        return None
+            if normalized_friendly == normalized_target:
+                name_score = 1.0
+            elif (
+                normalized_target in normalized_friendly
+                or normalized_friendly in normalized_target
+            ):
+                name_score = 0.85
+            elif distance <= threshold or similarity >= 0.55:
+                name_score = similarity
+            else:
+                continue
+
+            location_bonus = self._light_location_bonus(
+                entity_id, preferred_area_id, floor_ids
+            )
+            score = name_score + location_bonus
+            ranked = (-score, distance, entity_id)
+            if best is None or ranked < best:
+                best = ranked
+
+        return best[2] if best is not None else None
 
     def _find_matching_climate(self, target_name: str, area_id: str | None) -> str | None:
         from homeassistant.helpers import entity_registry as er
