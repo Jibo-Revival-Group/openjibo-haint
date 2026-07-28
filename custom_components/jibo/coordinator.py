@@ -149,6 +149,8 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         heard_name: str | None = None,
         candidates: list[dict[str, str]] | None = None,
         message: str | None = None,
+        current_temperature: float | None = None,
+        unit: str | None = None,
     ) -> None:
         if not request_id:
             return
@@ -166,6 +168,10 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             payload["candidates"] = candidates
         if message:
             payload["message"] = message
+        if current_temperature is not None:
+            payload["currentTemperature"] = current_temperature
+        if unit:
+            payload["unit"] = unit
 
         sent = await self._client.async_send_json(payload)
         if not sent:
@@ -217,6 +223,16 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._apply_blacklist_from_payload(payload)
                 await self._handle_climate_room_adjust(
                     self._parse_delta(payload.get("delta")), request_id
+                )
+                return
+
+            if command == "climate_get_temperature_current_room":
+                await self._handle_climate_room_get_temp(request_id)
+                return
+
+            if command == "climate_get_temperature_named":
+                await self._handle_climate_named_get_temp(
+                    payload.get("targetName"), request_id
                 )
                 return
 
@@ -385,6 +401,64 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             request_id, "ok", matched_name=matched_name
         )
 
+    async def _handle_climate_room_get_temp(
+        self, request_id: str | None = None
+    ) -> None:
+        from homeassistant.helpers import entity_registry as er
+
+        resolution = self._resolve_room_climate_entities(er.async_get(self.hass))
+        if resolution["status"] == "not_found":
+            await self._send_command_result(request_id, "not_found")
+            return
+        if resolution["status"] == "needs_clarification":
+            await self._send_command_result(
+                request_id,
+                "needs_clarification",
+                candidates=resolution["candidates"],
+            )
+            return
+
+        entity_ids = resolution["entity_ids"]
+        # Reads need a single ambient value; multi-thermostat rooms clarify.
+        if len(entity_ids) > 1:
+            candidates = [
+                {"entityId": entity_id, "name": self._friendly_name(entity_id)}
+                for entity_id in entity_ids
+            ]
+            await self._send_command_result(
+                request_id,
+                "needs_clarification",
+                candidates=candidates,
+            )
+            return
+
+        await self._send_climate_temperature_reading(entity_ids[0], request_id)
+
+    async def _handle_climate_named_get_temp(
+        self,
+        target_name: str | None,
+        request_id: str | None = None,
+    ) -> None:
+        if not target_name:
+            _LOGGER.warning("OpenJibo named climate get command missing targetName")
+            await self._send_command_result(
+                request_id, "not_found", heard_name=target_name or "that thermostat"
+            )
+            return
+
+        area_id = self._get_jibo_area_id()
+        entity_id = self._find_matching_climate(target_name, area_id)
+        if entity_id is None:
+            _LOGGER.warning("No climate entity matched target %r", target_name)
+            await self._send_command_result(
+                request_id, "not_found", heard_name=target_name
+            )
+            return
+
+        await self._send_climate_temperature_reading(
+            entity_id, request_id, heard_name=target_name
+        )
+
     async def _handle_climate_apply_entity(
         self, payload: dict[str, Any], request_id: str | None = None
     ) -> None:
@@ -396,6 +470,10 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         action = str(payload.get("action") or "").lower()
+        if action == "get_temperature":
+            await self._send_climate_temperature_reading(entity_id, request_id)
+            return
+
         if action == "set_temperature":
             parsed_temperature = self._parse_temperature(payload.get("temperature"))
             if parsed_temperature is None:
@@ -421,6 +499,67 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._send_command_result(
             request_id, "ok", matched_name=self._friendly_name(entity_id)
         )
+
+    async def _send_climate_temperature_reading(
+        self,
+        entity_id: str,
+        request_id: str | None = None,
+        *,
+        heard_name: str | None = None,
+    ) -> None:
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in {"unavailable", "unknown"}:
+            await self._send_command_result(
+                request_id,
+                "error",
+                message=f"climate entity {entity_id} unavailable",
+                heard_name=heard_name,
+            )
+            return
+
+        current_temp = state.attributes.get("current_temperature")
+        if current_temp is None:
+            await self._send_command_result(
+                request_id,
+                "error",
+                message=f"climate entity {entity_id} has no current temperature",
+                heard_name=heard_name,
+                matched_name=self._friendly_name(entity_id),
+            )
+            return
+
+        try:
+            current_value = float(current_temp)
+        except (TypeError, ValueError):
+            await self._send_command_result(
+                request_id,
+                "error",
+                message=f"climate entity {entity_id} has invalid current temperature",
+                heard_name=heard_name,
+                matched_name=self._friendly_name(entity_id),
+            )
+            return
+
+        unit = self._temperature_unit()
+        await self._send_command_result(
+            request_id,
+            "ok",
+            matched_name=self._friendly_name(entity_id),
+            heard_name=heard_name,
+            current_temperature=current_value,
+            unit=unit,
+        )
+
+    def _temperature_unit(self) -> str:
+        unit = getattr(self.hass.config.units, "temperature_unit", None)
+        if unit is None:
+            return "°F"
+        unit_text = str(unit)
+        if unit_text in {"°C", "C", "celsius", "Celsius"}:
+            return "°C"
+        if unit_text in {"°F", "F", "fahrenheit", "Fahrenheit"}:
+            return "°F"
+        return unit_text if unit_text.startswith("°") else f"°{unit_text}"
 
     def _resolve_room_climate_entities(self, entity_registry: Any) -> dict[str, Any]:
         area_id = self._get_jibo_area_id()
