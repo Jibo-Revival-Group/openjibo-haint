@@ -18,6 +18,7 @@ This Home Assistant integration allows you to connect your Jibo device, enabling
 7. On the portal, sign in via the code given by your Jibo
 8. Go to your Home Assistant Notifications and copy your pairing code
 9. Paste your pairing code into the OpenJibo portal
+
 Your robot should now work with Home Assistant. If it doesn't visit our [website](https://jiborevived.com) for support
 ## What This Does:
 This integration will add support for Jibo to control lights and thermostats within your Home. It also exposes (if you've entered his IP) a entity that tells you whether or not he is online. OpenJibo also gives you the say service which (if you've entered his IP) allows you to make him say things, via his built-in TTS service.
