@@ -31,10 +31,12 @@ class OpenJiboWebSocketClient:
         instance_id: str,
         on_message: MessageHandler,
         link_id: str | None = None,
+        command_secret: str | None = None,
     ) -> None:
         self._server_url = server_url
         self._instance_id = instance_id
         self._link_id = link_id
+        self._command_secret = command_secret
         self._on_message = on_message
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -45,6 +47,14 @@ class OpenJiboWebSocketClient:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    @property
+    def link_id(self) -> str | None:
+        return self._link_id
+
+    @property
+    def command_secret(self) -> str | None:
+        return self._command_secret
 
     async def start(self) -> None:
         if self._task is not None:
@@ -73,8 +83,16 @@ class OpenJiboWebSocketClient:
 
         self._connected = False
 
-    def clear_link_id(self) -> None:
+    def set_pairing(self, link_id: str | None, command_secret: str | None) -> None:
+        self._link_id = link_id
+        self._command_secret = command_secret
+
+    def clear_pairing(self) -> None:
         self._link_id = None
+        self._command_secret = None
+
+    def clear_link_id(self) -> None:
+        self.clear_pairing()
 
     async def force_reconnect(self) -> None:
         if self._ws is not None and not self._ws.closed:

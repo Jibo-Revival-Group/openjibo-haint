@@ -1,12 +1,15 @@
 import logging
 import re
+import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+from .command_auth import verify as verify_command_auth
 from .const import (
+    CONF_COMMAND_SECRET,
     CONF_INSTANCE_ID,
     CONF_JIBO_FRIENDLY_NAME,
     CONF_LINK_ID,
@@ -20,6 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 _LIGHT_SUFFIXES = (" light", " lights", " lamp", " lamps")
 _CLIMATE_SUFFIXES = (" thermostat", " hvac", " heat", " ac")
 _DEFAULT_CLIMATE_DELTA = 2.0
+_NONCE_TTL_SECONDS = 120
 
 
 class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -37,9 +41,11 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entry.data[CONF_INSTANCE_ID],
             self._handle_message,
             entry.data.get(CONF_LINK_ID),
+            entry.data.get(CONF_COMMAND_SECRET),
         )
         self._blacklist_heat = False
         self._blacklist_cool = False
+        self._seen_nonces: dict[str, float] = {}
 
     @property
     def connected(self) -> bool:
@@ -88,20 +94,32 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 {"notification_id": notification_id},
             )
 
-            updates = {
-                CONF_LINK_ID: payload.get("linkId"),
+            link_id = payload.get("linkId")
+            command_secret = payload.get("commandSecret")
+            if not isinstance(command_secret, str) or not command_secret:
+                command_secret = self.entry.data.get(CONF_COMMAND_SECRET)
+
+            updates: dict[str, Any] = {
+                CONF_LINK_ID: link_id,
                 CONF_JIBO_FRIENDLY_NAME: payload.get("jiboFriendlyName"),
             }
+            if isinstance(command_secret, str) and command_secret:
+                updates[CONF_COMMAND_SECRET] = command_secret
+
             self.hass.config_entries.async_update_entry(
                 self.entry,
                 data={**self.entry.data, **{k: v for k, v in updates.items() if v}},
+            )
+            self._client.set_pairing(
+                link_id if isinstance(link_id, str) else None,
+                command_secret if isinstance(command_secret, str) else None,
             )
             self.async_set_updated_data(
                 {
                     "verification_code": None,
                     "paired": True,
                     "jibo_friendly_name": payload.get("jiboFriendlyName"),
-                    "link_id": payload.get("linkId"),
+                    "link_id": link_id,
                 }
             )
             return
@@ -117,10 +135,11 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             cleared_data = {
                 key: value
                 for key, value in self.entry.data.items()
-                if key not in {CONF_LINK_ID, CONF_JIBO_FRIENDLY_NAME}
+                if key not in {CONF_LINK_ID, CONF_JIBO_FRIENDLY_NAME, CONF_COMMAND_SECRET}
             }
             self.hass.config_entries.async_update_entry(self.entry, data=cleared_data)
-            self._client.clear_link_id()
+            self._client.clear_pairing()
+            self._seen_nonces.clear()
             self.async_set_updated_data(
                 {
                     "verification_code": None,
@@ -139,6 +158,37 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if message_type == "command":
             await self._handle_command(payload)
             return
+
+    def _purge_expired_nonces(self, now: float) -> None:
+        expired = [
+            nonce
+            for nonce, seen_at in self._seen_nonces.items()
+            if now - seen_at > _NONCE_TTL_SECONDS
+        ]
+        for nonce in expired:
+            self._seen_nonces.pop(nonce, None)
+
+    def _verify_command_auth(self, payload: dict[str, Any]) -> bool:
+        command_secret = self.entry.data.get(CONF_COMMAND_SECRET) or self._client.command_secret
+        link_id = self.entry.data.get(CONF_LINK_ID) or self._client.link_id
+        if not command_secret or not link_id:
+            return False
+
+        if not verify_command_auth(
+            payload,
+            command_secret,
+            expected_link_id=link_id,
+        ):
+            return False
+
+        nonce = str(payload.get("nonce") or "")
+        now = time.time()
+        self._purge_expired_nonces(now)
+        if nonce in self._seen_nonces:
+            return False
+
+        self._seen_nonces[nonce] = now
+        return True
 
     async def _send_command_result(
         self,
@@ -180,6 +230,16 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _handle_command(self, payload: dict[str, Any]) -> None:
         command = payload.get("command")
         request_id = payload.get("requestId")
+
+        if not self._verify_command_auth(payload):
+            _LOGGER.warning(
+                "Rejected OpenJibo command %s: authentication failed",
+                command,
+            )
+            await self._send_command_result(
+                request_id, "error", message="auth_failed"
+            )
+            return
 
         try:
             if command == "lights_off_current_room":
