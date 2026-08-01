@@ -12,7 +12,7 @@ This Home Assistant integration allows you to connect your Jibo device, enabling
 1. Go to your Devices menu and click "Add Integration"
 2. Select/Search OpenJibo in the new menu
 3. Enter the URL of your OpenJibo Server (e.g. https://api.5x1.com:80)
-4. Set an Integration Name your Jibo (it doesn't matter what you pick)
+4. Set an Integration Name for your Jibo (it doesn't matter what you pick)
 5. Enter the IP of your Robot (optional, requires HA to be on the same network as Jibo)
 6. Go to the OpenJibo portal (<SERVER_URL>/portal)
 7. On the portal, sign in via the code given by your Jibo
