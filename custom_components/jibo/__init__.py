@@ -1,10 +1,12 @@
 import aiohttp
 import voluptuous as vol
+from aiohttp import web
+from homeassistant.components import webhook
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 import logging
 
-from .const import CONF_JIBO_IP, DOMAIN, PLATFORMS
+from .const import CONF_JIBO_IP, CONF_SERVER_MODE, CONF_WEBHOOK_ID, DOMAIN, PLATFORMS, is_beefy_mode
 from .coordinator import JiboCoordinator
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -33,6 +35,17 @@ async def async_setup_entry(hass: HomeAssistant, entry):
         "name": entry.data.get("name", entry.title),
         "coordinator": coordinator,
     }
+
+    webhook_id = entry.data.get(CONF_WEBHOOK_ID)
+    if is_beefy_mode(entry.data.get(CONF_SERVER_MODE)) and webhook_id:
+        webhook.async_register(
+            hass,
+            DOMAIN,
+            "Jibo",
+            webhook_id,
+            _handle_robot_webhook,
+            local_only=True,
+        )
 
     if not hass.services.has_service(DOMAIN, "say"):
         async def handle_say(call: ServiceCall):
@@ -93,7 +106,36 @@ async def async_setup_entry(hass: HomeAssistant, entry):
     return True
 
 
+async def _handle_robot_webhook(hass: HomeAssistant, webhook_id: str, request: web.Request):
+    coordinator = None
+    for data in hass.data.get(DOMAIN, {}).values():
+        if not isinstance(data, dict):
+            continue
+        candidate = data.get("coordinator")
+        if candidate and candidate.entry.data.get(CONF_WEBHOOK_ID) == webhook_id:
+            coordinator = candidate
+            break
+
+    if coordinator is None:
+        return web.Response(status=404, text="unknown webhook")
+
+    try:
+        payload = await request.json()
+    except (ValueError, aiohttp.ContentTypeError):
+        return web.json_response({"status": "error", "message": "invalid_json"}, status=400)
+    if not isinstance(payload, dict):
+        return web.json_response({"status": "error", "message": "invalid_json"}, status=400)
+
+    result = await coordinator.async_handle_local_request(payload)
+    status = 401 if result.get("message") == "auth_failed" else 200
+    return web.json_response(result, status=status)
+
+
 async def async_unload_entry(hass: HomeAssistant, entry):
+    webhook_id = entry.data.get(CONF_WEBHOOK_ID)
+    if webhook_id:
+        webhook.async_unregister(hass, webhook_id)
+
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unloaded:

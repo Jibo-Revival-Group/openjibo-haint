@@ -2,7 +2,53 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect OpenJibo",
+        "title": "Which Server is Used?",
+        "menu_options": {
+          "five_x1": "5x1",
+          "self_host_beefy": "Self-Host BEefy",
+          "openjibo_com": "OpenJibo.com",
+          "self_host_openjibo": "Self-Host OpenJibo",
+          "phoenix": "Phoenix"
+        }
+      },
+      "five_x1": {
+        "title": "5x1",
+        "description": "Enter your Jibo's IP address. After you submit, confirm this Home Assistant server's IP on the Jibo. The robot's conversation server will be set to api.5x1.com.",
+        "data": {
+          "name": "Integration Name",
+          "jibo_ip": "Robot IP Address"
+        },
+        "data_description": {
+          "name": "A friendly name for this Jibo connection.",
+          "jibo_ip": "The Jibo must be on the same network as Home Assistant."
+        }
+      },
+      "self_host_beefy": {
+        "title": "Self-Host BEefy",
+        "description": "Enter your Jibo's IP address. After you submit, confirm this Home Assistant server's IP on the Jibo. The robot keeps its current conversation server.",
+        "data": {
+          "name": "Integration Name",
+          "jibo_ip": "Robot IP Address"
+        },
+        "data_description": {
+          "name": "A friendly name for this Jibo connection.",
+          "jibo_ip": "The Jibo must be on the same network as Home Assistant."
+        }
+      },
+      "openjibo_com": {
+        "title": "OpenJibo.com",
+        "description": "Connect to api.openjibo.com. After setup, a pairing code will appear as a Home Assistant notification. Complete pairing in the OpenJibo portal.",
+        "data": {
+          "name": "Integration Name",
+          "jibo_ip": "Robot IP Address (optional)"
+        },
+        "data_description": {
+          "name": "A friendly name for this OpenJibo connection.",
+          "jibo_ip": "Optional local IP for direct TTS via the jibo.say service."
+        }
+      },
+      "self_host_openjibo": {
+        "title": "Self-Host OpenJibo",
         "description": "Enter your OpenJibo server URL and optional local robot details. After setup, a pairing code will appear as a Home Assistant notification. Complete pairing in the OpenJibo portal.",
         "data": {
           "server_url": "OpenJibo Server URL",
@@ -16,8 +62,17 @@
         }
       }
     },
+    "error": {
+      "cannot_connect": "Could not reach the Jibo. Check the IP and that the robot is on.",
+      "rejected": "The Jibo declined this Home Assistant server.",
+      "timeout": "The Jibo did not confirm in time. Try again.",
+      "invalid_auth": "The Jibo did not return a pairing password.",
+      "no_screen": "The Jibo could not show the confirmation screen.",
+      "unknown": "Pairing failed. Try again."
+    },
     "abort": {
-      "already_configured": "This OpenJibo connection is already configured."
+      "already_configured": "This OpenJibo connection is already configured.",
+      "not_supported": "Not Supported"
     }
   },
   "entity": {

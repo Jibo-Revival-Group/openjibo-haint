@@ -1,3 +1,4 @@
+import hmac
 import logging
 import re
 import time
@@ -12,10 +13,13 @@ from .const import (
     CONF_COMMAND_SECRET,
     CONF_INSTANCE_ID,
     CONF_JIBO_FRIENDLY_NAME,
+    CONF_JIBO_IP,
     CONF_LINK_ID,
+    CONF_SERVER_MODE,
     CONF_SERVER_URL,
     DOMAIN,
     NOTIFICATION_ID_PREFIX,
+    is_beefy_mode,
 )
 from .websocket_client import OpenJiboWebSocketClient
 
@@ -36,26 +40,94 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             name=f"{DOMAIN}_{entry.entry_id}",
         )
         self.entry = entry
-        self._client = OpenJiboWebSocketClient(
-            entry.data[CONF_SERVER_URL],
-            entry.data[CONF_INSTANCE_ID],
-            self._handle_message,
-            entry.data.get(CONF_LINK_ID),
-            entry.data.get(CONF_COMMAND_SECRET),
-        )
+        self._local = is_beefy_mode(entry.data.get(CONF_SERVER_MODE))
+        self._client = None
+        if not self._local:
+            self._client = OpenJiboWebSocketClient(
+                entry.data[CONF_SERVER_URL],
+                entry.data[CONF_INSTANCE_ID],
+                self._handle_message,
+                entry.data.get(CONF_LINK_ID),
+                entry.data.get(CONF_COMMAND_SECRET),
+            )
         self._blacklist_heat = False
         self._blacklist_cool = False
         self._seen_nonces: dict[str, float] = {}
+        self._capture_result = False
+        self._captured_result: dict[str, Any] | None = None
 
     @property
     def connected(self) -> bool:
+        if self._client is None:
+            return False
         return self._client.connected
 
     async def async_start(self) -> None:
-        await self._client.start()
+        if self._client is not None:
+            await self._client.start()
 
     async def async_shutdown(self) -> None:
-        await self._client.stop()
+        if self._client is not None:
+            await self._client.stop()
+
+    def _password_matches(self, provided: Any) -> bool:
+        stored = self.entry.data.get(CONF_COMMAND_SECRET)
+        if not isinstance(stored, str) or not stored or not isinstance(provided, str):
+            return False
+        return hmac.compare_digest(stored, provided)
+
+    def _apply_ip_update(self, payload: dict[str, Any]) -> dict[str, Any]:
+        ip = str(payload.get("ip") or "").strip()
+        if not ip or any(char.isspace() for char in ip):
+            return {
+                "type": "command_result",
+                "status": "error",
+                "message": "invalid_ip",
+            }
+
+        self.hass.config_entries.async_update_entry(
+            self.entry,
+            data={**self.entry.data, CONF_JIBO_IP: ip},
+        )
+        entry_data = self.hass.data.get(DOMAIN, {}).get(self.entry.entry_id)
+        if isinstance(entry_data, dict):
+            entry_data["jibo_ip"] = ip
+        _LOGGER.info("Jibo announced new IP %s", ip)
+        return {"ok": True, "ip": ip}
+
+    async def async_handle_local_request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Handle a robot webhook call authenticated with the shared password."""
+        request_id = payload.get("requestId")
+        if not self._password_matches(payload.get("password")):
+            return {
+                "type": "command_result",
+                "requestId": request_id,
+                "status": "error",
+                "message": "auth_failed",
+            }
+
+        message_type = payload.get("type")
+        if message_type == "ip_update":
+            return self._apply_ip_update(payload)
+        if message_type != "command":
+            return {
+                "type": "command_result",
+                "requestId": request_id,
+                "status": "error",
+                "message": "unknown message",
+            }
+
+        self._capture_result = True
+        self._captured_result = None
+        try:
+            await self._handle_command(payload, authenticated=True)
+        finally:
+            self._capture_result = False
+        return self._captured_result or {
+            "type": "command_result",
+            "requestId": request_id,
+            "status": "ok",
+        }
 
     async def _handle_message(self, payload: dict[str, Any]) -> None:
         message_type = payload.get("type")
@@ -169,8 +241,12 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._seen_nonces.pop(nonce, None)
 
     def _verify_command_auth(self, payload: dict[str, Any]) -> bool:
-        command_secret = self.entry.data.get(CONF_COMMAND_SECRET) or self._client.command_secret
-        link_id = self.entry.data.get(CONF_LINK_ID) or self._client.link_id
+        command_secret = self.entry.data.get(CONF_COMMAND_SECRET)
+        if not command_secret and self._client is not None:
+            command_secret = self._client.command_secret
+        link_id = self.entry.data.get(CONF_LINK_ID)
+        if not link_id and self._client is not None:
+            link_id = self._client.link_id
         if not command_secret or not link_id:
             return False
 
@@ -202,9 +278,6 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         current_temperature: float | None = None,
         unit: str | None = None,
     ) -> None:
-        if not request_id:
-            return
-
         payload: dict[str, Any] = {
             "type": "command_result",
             "requestId": request_id,
@@ -223,15 +296,24 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if unit:
             payload["unit"] = unit
 
+        if self._capture_result:
+            self._captured_result = payload
+            return
+
+        if not request_id or self._client is None:
+            return
+
         sent = await self._client.async_send_json(payload)
         if not sent:
             _LOGGER.warning("Failed to send command_result for request %s", request_id)
 
-    async def _handle_command(self, payload: dict[str, Any]) -> None:
+    async def _handle_command(
+        self, payload: dict[str, Any], *, authenticated: bool = False
+    ) -> None:
         command = payload.get("command")
         request_id = payload.get("requestId")
 
-        if not self._verify_command_auth(payload):
+        if not authenticated and not self._verify_command_auth(payload):
             _LOGGER.warning(
                 "Rejected OpenJibo command %s: authentication failed",
                 command,

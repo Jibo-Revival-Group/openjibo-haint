@@ -10,7 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import CONF_JIBO_IP, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ class JiboConnectivitySensor(BinarySensorEntity):
     _attr_should_poll = True
 
     def __init__(self, entry: ConfigEntry, ip: str, name: str, coordinator) -> None:
+        self._entry = entry
         self._ip = ip
         self._coordinator = coordinator
         self._attr_unique_id = f"{entry.entry_id}_connectivity"
@@ -49,6 +50,7 @@ class JiboConnectivitySensor(BinarySensorEntity):
         }
 
     async def async_update(self) -> None:
+        self._ip = self._entry.data.get(CONF_JIBO_IP, "") or self._ip
         if self._ip:
             try:
                 _, writer = await asyncio.wait_for(

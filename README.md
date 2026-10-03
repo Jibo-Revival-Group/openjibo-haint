@@ -1,24 +1,36 @@
 # OpenJibo
-This Home Assistant integration allows you to connect your Jibo device, enabling control over:
+This Home Assistant integration lets your Jibo control:
 - Lights
 - Thermostats
 - (Likely more in the future)
-## Requirements:
-- Jibo Robot (Must be pointed at an OpenJibo Server)
-- Home Assistant (With HACS installed)
-- Connection to Internet
-- Access to an OpenJibo Server (self-hosted is supported)
-## Setup:
-1. Go to your Devices menu and click "Add Integration"
-2. Select/Search OpenJibo in the new menu
-3. Enter the URL of your OpenJibo Server (e.g. https://api.5x1.com:80)
-4. Set an Integration Name for your Jibo (it doesn't matter what you pick)
-5. Enter the IP of your Robot (optional, requires HA to be on the same network as Jibo)
-6. Go to the OpenJibo portal (<SERVER_URL>/portal)
-7. On the portal, sign in via the code given by your Jibo
-8. Go to your Home Assistant Notifications and copy your pairing code
-9. Paste your pairing code into the OpenJibo portal
 
-Your robot should now work with Home Assistant. If it doesn't visit our [website](https://jiborevived.com) for support
-## What This Does:
-This integration will add support for Jibo to control lights and thermostats within your Home. It also exposes (if you've entered his IP) a entity that tells you whether or not he is online. OpenJibo also gives you the say service which (if you've entered his IP) allows you to make him say things, via his built-in TTS service.
+## Requirements
+- Jibo robot
+- Home Assistant with HACS installed
+- For 5x1, OpenJibo.com, or a self-hosted server: internet (or a reachable server)
+- For 5x1 and Self-Host BEefy: Home Assistant and the Jibo on the same network
+
+## Setup
+1. Go to Devices and click Add Integration
+2. Search for OpenJibo
+3. Choose **Which Server is Used?**
+
+### 5x1
+Uses BEefy at `api.5x1.com`. Enter the Jibo's IP address. The robot shows that Home Assistant machine's IP and asks Yes or No. On Yes it saves a shared password and points its conversation server at `api.5x1.com`. After that, BEefy tells the robot what to send when you say things like "turn on the lights," and the robot calls Home Assistant. If the Jibo's IP changes, it tells Home Assistant the new address and proves it with the password.
+
+### Self-Host BEefy
+Same pairing as 5x1, but the robot keeps whatever conversation server it already uses. Point the robot at your BEefy server before setup.
+
+### OpenJibo.com
+Uses `https://api.openjibo.com`. Enter a name and, if you want, the robot's IP (for the online sensor and `jibo.say`). A pairing code appears as a Home Assistant notification. Sign in at the OpenJibo portal with the code your Jibo speaks, then paste the notification code into the portal.
+
+### Self-Host OpenJibo
+Same as OpenJibo.com, except you enter your own server URL (for example `http://192.168.1.10:24605`). Finish pairing in that server's portal (`<SERVER_URL>/portal`).
+
+### Phoenix
+Not supported.
+
+## What this does
+Jibo can control lights and thermostats. If you entered his IP, the integration adds an entity that shows whether he is online, and the `jibo.say` service can make him speak through his built-in TTS service.
+
+If something does not work, visit [jiborevived.com](https://jiborevived.com) for support.
