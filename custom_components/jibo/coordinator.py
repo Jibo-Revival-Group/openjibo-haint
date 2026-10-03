@@ -296,6 +296,8 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if unit:
             payload["unit"] = unit
 
+        _LOGGER.info("OpenJibo command result requestId=%s status=%s message=%s",
+                     request_id, status, message)
         if self._capture_result:
             self._captured_result = payload
             return
@@ -312,6 +314,8 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> None:
         command = payload.get("command")
         request_id = payload.get("requestId")
+        _LOGGER.info("OpenJibo command received command=%s requestId=%s linkId=%s",
+                     command, request_id, payload.get("linkId"))
 
         if not authenticated and not self._verify_command_auth(payload):
             _LOGGER.warning(
@@ -325,13 +329,11 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         try:
             if command == "lights_off_current_room":
-                await self._handle_lights_room("turn_off")
-                await self._send_command_result(request_id, "ok")
+                await self._handle_lights_room("turn_off", request_id)
                 return
 
             if command == "lights_on_current_room":
-                await self._handle_lights_room("turn_on")
-                await self._send_command_result(request_id, "ok")
+                await self._handle_lights_room("turn_on", request_id)
                 return
 
             if command == "lights_off_named":
@@ -391,17 +393,24 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.exception("OpenJibo command %s failed: %s", command, err)
             await self._send_command_result(request_id, "error", message=str(err))
 
-    async def _handle_lights_room(self, service: str) -> None:
+    async def _handle_lights_room(self, service: str, request_id: str | None = None) -> None:
+        from homeassistant.helpers import entity_registry as er
+
         area_id = self._get_jibo_area_id()
         if area_id is None:
+            await self._send_command_result(request_id, "not_found", message="missing_area")
             return
 
+        entity_ids = self._list_light_entity_ids(er.async_get(self.hass), area_id)
+        _LOGGER.info("OpenJibo room light target requestId=%s area=%s entities=%s",
+                     request_id, area_id, entity_ids)
+        if not entity_ids:
+            await self._send_command_result(request_id, "not_found", message="no_lights")
+            return
         await self.hass.services.async_call(
-            "light",
-            service,
-            target={"area_id": [area_id]},
+            "light", service, {"entity_id": entity_ids}, blocking=True,
         )
-        _LOGGER.info("Called light.%s for area %s", service, area_id)
+        await self._send_command_result(request_id, "ok")
 
     async def _handle_lights_named(
         self,
@@ -430,6 +439,7 @@ class JiboCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "light",
             service,
             {"entity_id": entity_id},
+            blocking=True,
         )
         matched_name = self._friendly_name(entity_id)
         _LOGGER.info(

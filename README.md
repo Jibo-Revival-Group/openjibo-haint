@@ -34,3 +34,19 @@ Not supported.
 Jibo can control lights and thermostats. If you entered his IP, the integration adds an entity that shows whether he is online, and the `jibo.say` service can make him speak through his built-in TTS service.
 
 If something does not work, visit [jiborevived.com](https://jiborevived.com) for support.
+
+## Light command troubleshooting
+
+Assign the OpenJibo device and room lights to the same Home Assistant Area. Light entities inherit their device's Area unless they have their own Area assigned.
+
+With the updated BEefy server and integration installed, Jibo waits up to three seconds for a light-command result. A successful reply confirms that Home Assistant completed the service call; it does not verify the physical light's state. Cloud commands require this robot's pairing and are never broadcast to other connected Home Assistant instances.
+
+Enable debug logging for OpenJibo and repeat the command. Match the `requestId` in the integration's command receipt, target Area, and result logs with the server's dispatch and result logs. Missing Areas, empty rooms, authentication failures, and service errors now return failures. A timeout means confirmation did not arrive; the action may still have executed, so check the light before repeating it.
+
+After updating both components, restart the integration and server, then test one room-light command and one named-light command. Each should produce one service call and one correlated result. If Jibo requests pairing, use the pairing flow for your selected server above.
+
+Run the mocked receiver and reconnect tests from this repository with:
+
+```sh
+python3 -m unittest discover -s tests -v
+```

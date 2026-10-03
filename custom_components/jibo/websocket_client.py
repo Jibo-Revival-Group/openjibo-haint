@@ -126,34 +126,47 @@ class OpenJiboWebSocketClient:
     async def _connect_once(self) -> None:
         ws_url = build_websocket_url(self._server_url)
         timeout = aiohttp.ClientTimeout(total=None, connect=15, sock_read=None)
-        self._session = aiohttp.ClientSession(timeout=timeout)
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30)
+        session = aiohttp.ClientSession(timeout=timeout)
+        self._session = session
+        try:
+            self._ws = await session.ws_connect(ws_url, heartbeat=30)
 
-        await self._ws.send_json(
-            {
-                "type": "register",
-                "instanceId": self._instance_id,
-                **({"linkId": self._link_id} if self._link_id else {}),
-            }
-        )
+            await self._ws.send_json(
+                {
+                    "type": "register",
+                    "instanceId": self._instance_id,
+                    **({"linkId": self._link_id} if self._link_id else {}),
+                }
+            )
 
-        self._connected = True
-        _LOGGER.info("Connected to OpenJibo server at %s", ws_url)
+            self._connected = True
+            _LOGGER.info("Connected to OpenJibo server at %s", ws_url)
 
-        while not self._stop_event.is_set():
-            msg = await self._ws.receive()
-            if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                break
+            while not self._stop_event.is_set():
+                msg = await self._ws.receive()
+                if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    break
 
-            if msg.type != aiohttp.WSMsgType.TEXT:
-                continue
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    continue
 
+                try:
+                    payload = json.loads(msg.data)
+                except json.JSONDecodeError:
+                    _LOGGER.warning("Ignoring non-JSON WebSocket message from OpenJibo server")
+                    continue
+
+                await self._on_message(payload)
+
+            self._connected = False
+
+        finally:
+            self._connected = False
             try:
-                payload = json.loads(msg.data)
-            except json.JSONDecodeError:
-                _LOGGER.warning("Ignoring non-JSON WebSocket message from OpenJibo server")
-                continue
-
-            await self._on_message(payload)
-
-        self._connected = False
+                if self._ws is not None and not self._ws.closed:
+                    await self._ws.close()
+            finally:
+                self._ws = None
+                await session.close()
+                if self._session is session:
+                    self._session = None
