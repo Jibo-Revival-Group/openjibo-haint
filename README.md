@@ -39,7 +39,7 @@ If something does not work, visit [jiborevived.com](https://jiborevived.com) for
 
 Assign the OpenJibo device and room lights to the same Home Assistant Area. Light entities inherit their device's Area unless they have their own Area assigned.
 
-With the updated BEefy server and integration installed, Jibo waits up to three seconds for a light-command result. A successful reply confirms that Home Assistant completed the service call; it does not verify the physical light's state. Cloud commands require this robot's pairing and are never broadcast to other connected Home Assistant instances.
+With the updated BEefy server and integration installed, Jibo waits up to three seconds for a light-command result. A successful reply confirms that Home Assistant completed the service call; it does not verify the physical light's state. BEefy and 5x1 always return commands through the requesting robot, which authenticates to Home Assistant using its saved Yes/No pairing. They do not use portal pairing codes or the legacy Home Assistant WebSocket connection. Portal pairing remains available only for older servers such as OpenJibo.com.
 
 Enable debug logging for OpenJibo and repeat the command. Match the `requestId` in the integration's command receipt, target Area, and result logs with the server's dispatch and result logs. Missing Areas, empty rooms, authentication failures, and service errors now return failures. A timeout means confirmation did not arrive; the action may still have executed, so check the light before repeating it.
 
