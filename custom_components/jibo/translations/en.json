@@ -13,25 +13,21 @@
       },
       "five_x1": {
         "title": "5x1",
-        "description": "Enter your Jibo's IP address. After you submit, confirm this Home Assistant server's IP on the Jibo. The robot's conversation server will be set to api.5x1.com.",
+        "description": "Enter your Jibo's IP address. After you submit, confirm this Home Assistant server's IP on the Jibo. The robot's conversation server will be set to api.5x1.com. The robot name is detected automatically.",
         "data": {
-          "name": "Integration Name",
           "jibo_ip": "Robot IP Address"
         },
         "data_description": {
-          "name": "A friendly name for this Jibo connection.",
           "jibo_ip": "The Jibo must be on the same network as Home Assistant."
         }
       },
       "self_host_beefy": {
         "title": "Self-Host BEefy",
-        "description": "Enter your Jibo's IP address. After you submit, confirm this Home Assistant server's IP on the Jibo. The robot keeps its current conversation server.",
+        "description": "Enter your Jibo's IP address. After you submit, confirm this Home Assistant server's IP on the Jibo. The robot keeps its current conversation server. The robot name is detected automatically.",
         "data": {
-          "name": "Integration Name",
           "jibo_ip": "Robot IP Address"
         },
         "data_description": {
-          "name": "A friendly name for this Jibo connection.",
           "jibo_ip": "The Jibo must be on the same network as Home Assistant."
         }
       },

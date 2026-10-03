@@ -99,7 +99,6 @@ class JiboConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def _async_step_beefy(self, user_input, mode: str, step_id: str):
         errors = {}
         if user_input is not None:
-            name = user_input.get("name", "").strip() or "OpenJibo"
             jibo_ip = user_input.get(CONF_JIBO_IP, "").strip()
             if not jibo_ip:
                 errors[CONF_JIBO_IP] = "cannot_connect"
@@ -121,6 +120,7 @@ class JiboConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     await self.async_set_unique_id(f"beefy:{jibo_ip}")
                     self._abort_if_unique_id_configured()
+                    name = await _robot_name(jibo_ip)
                     server_url = FIVE_X1_URL if mode == MODE_5X1 else ""
                     return self.async_create_entry(
                         title=name,
@@ -140,7 +140,6 @@ class JiboConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id=step_id,
             data_schema=vol.Schema(
                 {
-                    vol.Required("name"): str,
                     vol.Required(CONF_JIBO_IP): str,
                 }
             ),
@@ -210,3 +209,20 @@ async def _pair_with_robot(jibo_ip: str, payload: dict) -> tuple[str | None, str
     if payload.get("mode") not in BEEFY_MODES:
         return "unknown", None
     return None, password
+
+
+async def _robot_name(jibo_ip: str) -> str:
+    """Read the robot's friendly identity, e.g. Air-Degree-Lunch-Canvas."""
+    url = f"http://{jibo_ip}:{BEACON_PORT}/api/setup"
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    body = await response.json(content_type=None)
+                    name = body.get("robotName") if isinstance(body, dict) else None
+                    if isinstance(name, str) and name.strip():
+                        return name.strip()
+    except (TimeoutError, aiohttp.ClientError, ValueError):
+        pass
+    # Keep a successful pairing usable with robots lacking the identity endpoint.
+    return f"Jibo ({jibo_ip})"
