@@ -57,7 +57,7 @@ Native BE/BEacon pairing provides a Camera entity and **Start Camera Stream**,
 Jibo device. HA must reach Jibo locally on port 8123 and have its ffmpeg
 integration available. Viewing the Camera does not start capture.
 
-The robot implementation currently requires hardware acceptance before Start
-is enabled. See `BEam/docs/camera-streaming.md` in the BEcosystem workspace for
-the validation procedure. Streaming performance has not yet been tested on a
-real Jibo. Cloud-only OpenJibo pairings do not expose these local camera entities.
+Camera streaming is enabled for on-robot testing without a validation record.
+See `BEam/docs/camera-streaming.md` in the BEcosystem workspace for native
+transport details and testing steps. Streaming performance still needs to be
+measured on a real Jibo. Cloud-only OpenJibo pairings do not expose these local camera entities.
