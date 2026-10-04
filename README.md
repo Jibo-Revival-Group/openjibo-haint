@@ -60,6 +60,8 @@ one-second refresh, while the other readings refresh every 30 seconds.
 **Sleeping** uses the same one-second refresh and reports on during nighttime
 sleep or a daytime nap, and off when awake or running another skill. An
 uninitialized sleep state or lost connection makes it unavailable.
+The **Go to Sleep** button invokes Jibo's normal sleep behavior. Privacy mode,
+active camera streaming, or an uninterruptible skill can refuse the command.
 
 The **Speak** action (`jibo.say`) includes a picker for one or multiple Jibo
 devices. Leave Robots empty to speak on all configured robots. Existing YAML

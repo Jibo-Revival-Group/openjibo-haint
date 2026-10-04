@@ -98,6 +98,20 @@ class CameraStreamClient(DataUpdateCoordinator[dict]):
             self.close_viewers()
         self.async_set_updated_data(result)
 
+    async def async_sleep(self) -> None:
+        if self._closed:
+            raise HomeAssistantError("Jibo connection is closed")
+        try:
+            async with self._session.post(
+                self.endpoint("", api="sleep"), headers=self.headers(), allow_redirects=False,
+                timeout=aiohttp.ClientTimeout(total=20, connect=5),
+            ) as response:
+                body = await response.json()
+                if response.status != 200 or not isinstance(body, dict) or body.get("ok") is not True:
+                    raise HomeAssistantError(body.get("error", "Cannot put Jibo to sleep") if isinstance(body, dict) else "Cannot put Jibo to sleep")
+        except (aiohttp.ClientError, TimeoutError, ValueError):
+            raise HomeAssistantError("Cannot connect to Jibo's sleep control") from None
+
     @asynccontextmanager
     async def video(self):
         if self._closed or not self.data or self.data.get("state") != "streaming":

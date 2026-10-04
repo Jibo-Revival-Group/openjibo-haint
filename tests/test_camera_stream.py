@@ -99,7 +99,7 @@ if not HTTP_AVAILABLE:
     module("aiohttp").ClientResponse = object
     module("aiohttp").web = types.SimpleNamespace(Request=object, StreamResponse=object)
 
-from custom_components.jibo.button import JiboCameraButton, async_setup_entry as setup_buttons
+from custom_components.jibo.button import JiboCameraButton, JiboSleepButton, async_setup_entry as setup_buttons
 from custom_components.jibo.camera import JiboCamera, INACTIVE_IMAGE
 from custom_components.jibo.camera_stream_client import CameraStreamClient
 from custom_components.jibo.sensor import JiboTelemetrySensor, JiboChargingSensor, SENSORS, async_setup_entry as setup_sensors
@@ -208,6 +208,9 @@ class CameraHTTP(unittest.IsolatedAsyncioTestCase):
                 return web.json_response({"error": "Turn off privacy mode before streaming"}, status=409)
             if request.path in ("/api/telemetry", "/api/activity"):
                 return web.json_response({"battery": self.battery, **self.telemetry_values})
+            if request.path == "/api/sleep":
+                self.telemetry_values["sleeping"] = True
+                return web.json_response({"ok": True})
             if request.path.endswith("video"):
                 response = web.StreamResponse(headers={"Content-Type": "video/webm"})
                 await response.prepare(request)
@@ -223,6 +226,7 @@ class CameraHTTP(unittest.IsolatedAsyncioTestCase):
         app.router.add_route("*", "/api/camera-stream/{resource}", handle)
         app.router.add_get("/api/telemetry", handle)
         app.router.add_get("/api/activity", handle)
+        app.router.add_post("/api/sleep", handle)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -353,6 +357,20 @@ class CameraHTTP(unittest.IsolatedAsyncioTestCase):
         await activity.async_refresh()
         self.assertFalse(sensor.available)
         self.assertIsNone(sensor.is_on)
+        await activity.async_shutdown()
+
+    async def test_sleep_button_authenticated_routing_and_failures(self):
+        activity = JiboActivity(self.client.hass, self.client, self.entry)
+        button = JiboSleepButton(activity, self.client, self.entry, "Jibo")
+        self.assertEqual(button._attr_unique_id, "robot-1_go_to_sleep")
+        self.assertEqual(button._attr_device_info["identifiers"], {(DOMAIN, "robot-1")})
+        await button.async_press()
+        self.assertEqual(self.requests, [("POST", "/api/sleep", "Bearer private-secret"),
+                                         ("GET", "/api/activity", "Bearer private-secret")])
+        self.assertTrue(activity.data["sleeping"])
+        self.reject = True
+        with self.assertRaisesRegex(HomeAssistantError, "privacy mode"):
+            await button.async_press()
         await activity.async_shutdown()
 
     def test_speak_robot_picker_multiple_legacy_and_stale_targets(self):
