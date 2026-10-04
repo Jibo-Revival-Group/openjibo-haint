@@ -5,11 +5,13 @@ from homeassistant.components import webhook
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
 import logging
 
 from .const import CONF_COMMAND_SECRET, CONF_JIBO_IP, CONF_SERVER_MODE, CONF_WEBHOOK_ID, DOMAIN, PLATFORMS, is_beefy_mode
 from .camera_stream_client import CameraStreamClient
-from .telemetry import JiboTelemetry
+from .telemetry import JiboTelemetry, JiboActivity
+from .say_targets import resolve_targets
 from .coordinator import JiboCoordinator
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -18,7 +20,7 @@ _LOGGER = logging.getLogger(__name__)
 
 _SAY_SCHEMA = vol.Schema({
     vol.Required("message"): str,
-    vol.Optional("robot"): str,
+    vol.Optional("robot"): vol.Any(str, [str]),
 })
 
 
@@ -47,6 +49,9 @@ async def async_setup_entry(hass: HomeAssistant, entry):
         telemetry = JiboTelemetry(hass, camera_client, entry)
         hass.data[DOMAIN][entry.entry_id]["telemetry"] = telemetry
         await telemetry.async_refresh()
+        activity = JiboActivity(hass, camera_client, entry)
+        hass.data[DOMAIN][entry.entry_id]["activity"] = activity
+        await activity.async_refresh()
 
     webhook_id = entry.data.get(CONF_WEBHOOK_ID)
     if is_beefy_mode(entry.data.get(CONF_SERVER_MODE)) and webhook_id:
@@ -64,11 +69,11 @@ async def async_setup_entry(hass: HomeAssistant, entry):
             message = call.data["message"]
             robot_filter = call.data.get("robot")
 
-            targets = [
-                data["jibo_ip"]
-                for data in hass.data[DOMAIN].values()
-                if data.get("jibo_ip") and (robot_filter is None or data["name"] == robot_filter)
-            ]
+            try:
+                selected = resolve_targets(hass.data[DOMAIN], robot_filter, dr.async_get(hass))
+            except ValueError as error:
+                raise HomeAssistantError(str(error)) from None
+            targets = list(dict.fromkeys(data["jibo_ip"] for data in selected if data.get("jibo_ip")))
 
             for data in hass.data[DOMAIN].values():
                 camera_client = data.get("camera_stream")
@@ -159,6 +164,8 @@ async def async_unload_entry(hass: HomeAssistant, entry):
         entry_data = hass.data[DOMAIN].pop(entry.entry_id, None)
         if entry_data and (telemetry := entry_data.get("telemetry")):
             await telemetry.async_shutdown()
+        if entry_data and (activity := entry_data.get("activity")):
+            await activity.async_shutdown()
         if entry_data and (camera_client := entry_data.get("camera_stream")):
             await camera_client.async_close()
         if entry_data and (coordinator := entry_data.get("coordinator")):

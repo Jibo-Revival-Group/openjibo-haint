@@ -52,6 +52,19 @@ python3 -m unittest discover -s tests -v
 ```
 # Jibo telemetry
 
+**Charging State** reports Charging, Not Charging, or Not Plugged In.
+**Microphone RMS** reports the SDK's raw `db_rms` waveform level in dB; it is
+not calibrated environmental sound-pressure level (dB SPL). **Head Touch**
+reports whether any head pad is touched. Audio and touch share a separate
+one-second refresh, while the other readings refresh every 30 seconds.
+**Sleeping** uses the same one-second refresh and reports on during nighttime
+sleep or a daytime nap, and off when awake or running another skill. An
+uninitialized sleep state or lost connection makes it unavailable.
+
+The **Speak** action (`jibo.say`) includes a picker for one or multiple Jibo
+devices. Leave Robots empty to speak on all configured robots. Existing YAML
+using a robot name in `robot` still works.
+
 Native BE/BEacon pairing adds a **Battery** percentage sensor to the existing
 Jibo device, alongside **Plugged in**, **Battery Temp**, **Main board Temp**,
 **CPU Temp**, **System Voltage**, **Fan Speed**, **Speaker Volume**, and

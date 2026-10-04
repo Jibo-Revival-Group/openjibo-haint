@@ -83,7 +83,7 @@ module("homeassistant.components.camera").Camera = Camera
 module("homeassistant.components.button").ButtonEntity = type("ButtonEntity", (), {})
 sensor_module = module("homeassistant.components.sensor")
 sensor_module.SensorEntity = type("SensorEntity", (), {})
-sensor_module.SensorDeviceClass = types.SimpleNamespace(BATTERY="battery", TEMPERATURE="temperature", VOLTAGE="voltage")
+sensor_module.SensorDeviceClass = types.SimpleNamespace(BATTERY="battery", TEMPERATURE="temperature", VOLTAGE="voltage", ENUM="enum")
 sensor_module.SensorStateClass = types.SimpleNamespace(MEASUREMENT="measurement")
 binary_module = module("homeassistant.components.binary_sensor")
 binary_module.BinarySensorEntity = type("BinarySensorEntity", (), {})
@@ -102,8 +102,9 @@ if not HTTP_AVAILABLE:
 from custom_components.jibo.button import JiboCameraButton, async_setup_entry as setup_buttons
 from custom_components.jibo.camera import JiboCamera, INACTIVE_IMAGE
 from custom_components.jibo.camera_stream_client import CameraStreamClient
-from custom_components.jibo.sensor import JiboTelemetrySensor, SENSORS, async_setup_entry as setup_sensors
-from custom_components.jibo.telemetry import JiboTelemetry
+from custom_components.jibo.sensor import JiboTelemetrySensor, JiboChargingSensor, SENSORS, async_setup_entry as setup_sensors
+from custom_components.jibo.telemetry import JiboTelemetry, JiboActivity
+from custom_components.jibo.say_targets import resolve_targets
 from custom_components.jibo.binary_sensor import JiboTelemetryBinarySensor
 from custom_components.jibo.const import CONF_COMMAND_SECRET, CONF_JIBO_IP, DOMAIN
 
@@ -205,7 +206,7 @@ class CameraHTTP(unittest.IsolatedAsyncioTestCase):
             self.requests.append((request.method, request.path, request.headers.get("Authorization")))
             if self.reject:
                 return web.json_response({"error": "Turn off privacy mode before streaming"}, status=409)
-            if request.path == "/api/telemetry":
+            if request.path in ("/api/telemetry", "/api/activity"):
                 return web.json_response({"battery": self.battery, **self.telemetry_values})
             if request.path.endswith("video"):
                 response = web.StreamResponse(headers={"Content-Type": "video/webm"})
@@ -221,6 +222,7 @@ class CameraHTTP(unittest.IsolatedAsyncioTestCase):
         app = web.Application()
         app.router.add_route("*", "/api/camera-stream/{resource}", handle)
         app.router.add_get("/api/telemetry", handle)
+        app.router.add_get("/api/activity", handle)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -301,6 +303,72 @@ class CameraHTTP(unittest.IsolatedAsyncioTestCase):
         await coordinator.async_refresh()
         self.assertTrue(all(not sensor.available for sensor in sensors + [plugged, hatch]))
         await coordinator.async_shutdown()
+
+    async def test_charging_activity_and_entity_setup(self):
+        telemetry = JiboTelemetry(self.client.hass, self.client, self.entry)
+        activity = JiboActivity(self.client.hass, self.client, self.entry)
+        charging = JiboChargingSensor(telemetry, self.entry, "Jibo")
+        for state in ["Charging", "Not Charging", "Not Plugged In"]:
+            self.telemetry_values["charging_state"] = state
+            await telemetry.async_refresh()
+            self.assertEqual(charging.native_value, state)
+            self.assertIsNone(charging._attr_state_class)
+        self.telemetry_values.update({"audio_level": -42.5, "head_touch": True})
+        await activity.async_refresh()
+        self.assertEqual(self.requests[-1][1], "/api/activity")
+        self.assertEqual(activity.data["audio_level"], -42.5)
+        self.assertTrue(activity.data["head_touch"])
+        self.telemetry_values.update({"audio_level": "invalid", "head_touch": False})
+        await activity.async_refresh()
+        self.assertIsNone(activity.data["audio_level"])
+        self.assertFalse(activity.data["head_touch"])
+        hass = types.SimpleNamespace(data={DOMAIN: {self.entry.entry_id: {
+            "name": "Jibo", "telemetry": telemetry, "activity": activity,
+        }}})
+        added = []
+        await setup_sensors(hass, self.entry, lambda entities, **kwargs: added.extend(entities))
+        self.assertEqual(len(added), 9)
+        self.assertEqual(added[-1]._attr_name, "Microphone RMS")
+        await telemetry.async_shutdown()
+        await activity.async_shutdown()
+
+    async def test_sleeping_state_transitions_and_unavailability(self):
+        activity = JiboActivity(self.client.hass, self.client, self.entry)
+        sensor = JiboTelemetryBinarySensor(activity, self.entry, "Jibo", "sleeping", "Sleeping", None)
+        self.assertEqual(sensor._attr_unique_id, "robot-1_sleeping")
+        self.assertEqual(sensor._attr_name, "Sleeping")
+        for value in [False, True, False]:
+            self.telemetry_values["sleeping"] = value
+            await activity.async_refresh()
+            self.assertTrue(sensor.available)
+            self.assertEqual(sensor.is_on, value)
+        for value in [None, "false", 0]:
+            self.telemetry_values["sleeping"] = value
+            await activity.async_refresh()
+            self.assertFalse(sensor.available)
+            self.assertIsNone(sensor.is_on)
+        self.telemetry_values["sleeping"] = True
+        await activity.async_refresh()
+        self.reject = True
+        await activity.async_refresh()
+        self.assertFalse(sensor.available)
+        self.assertIsNone(sensor.is_on)
+        await activity.async_shutdown()
+
+    def test_speak_robot_picker_multiple_legacy_and_stale_targets(self):
+        robots = {"robot-1": {"name": "Living Room"}, "robot-2": {"name": "Kitchen"}}
+        devices = {"device-1": types.SimpleNamespace(identifiers={(DOMAIN, "robot-1")}),
+                   "device-2": types.SimpleNamespace(identifiers={(DOMAIN, "robot-2")}),
+                   "other": types.SimpleNamespace(identifiers={("other", "robot-1")})}
+        registry = types.SimpleNamespace(async_get=devices.get)
+        self.assertEqual(resolve_targets(robots, ["device-2"], registry), [robots["robot-2"]])
+        self.assertEqual(resolve_targets(robots, ["device-1", "device-2", "device-1"], registry), list(robots.values()))
+        self.assertEqual(resolve_targets(robots, "Living Room", registry), [robots["robot-1"]])
+        self.assertEqual(resolve_targets(robots, None, registry), list(robots.values()))
+        self.assertEqual(resolve_targets(robots, [], registry), list(robots.values()))
+        for selection in [["deleted"], ["device-1", "other"]]:
+            with self.assertRaises(ValueError):
+                resolve_targets(robots, selection, registry)
 
     async def test_explicit_controls_headers_and_local_stop_status(self):
         await self.client.async_refresh()

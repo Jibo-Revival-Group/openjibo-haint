@@ -36,6 +36,12 @@ async def async_setup_entry(
             JiboTelemetryBinarySensor(telemetry, entry, data["name"], "plugged_in", "Plugged in", BinarySensorDeviceClass.PLUG),
             JiboTelemetryBinarySensor(telemetry, entry, data["name"], "hatch_open", "Hatch State", BinarySensorDeviceClass.OPENING),
         ])
+    activity = data.get("activity")
+    if activity is not None:
+        async_add_entities([
+            JiboTelemetryBinarySensor(activity, entry, data["name"], "head_touch", "Head Touch", None),
+            JiboTelemetryBinarySensor(activity, entry, data["name"], "sleeping", "Sleeping", None),
+        ])
 
 
 class JiboTelemetryBinarySensor(CoordinatorEntity, BinarySensorEntity):
@@ -47,6 +53,8 @@ class JiboTelemetryBinarySensor(CoordinatorEntity, BinarySensorEntity):
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_name = label
         self._attr_device_class = device_class
+        if key == "sleeping":
+            self._attr_icon = "mdi:sleep"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)}, "name": name,
             "manufacturer": "Jibo Inc.", "model": "Jibo",

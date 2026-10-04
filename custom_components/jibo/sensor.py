@@ -12,7 +12,10 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     coordinator = data.get("telemetry")
     if coordinator is not None:
         async_add_entities([JiboTelemetrySensor(coordinator, entry, data["name"], *description)
-                            for description in SENSORS])
+                            for description in SENSORS] + [JiboChargingSensor(coordinator, entry, data["name"])])
+    activity = data.get("activity")
+    if activity is not None:
+        async_add_entities([JiboTelemetrySensor(activity, entry, data["name"], "audio_level", "Microphone RMS", None, "dB")])
 
 
 SENSORS = (
@@ -52,3 +55,13 @@ class JiboTelemetrySensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self):
         return self.coordinator.data.get(self._key) if self.available else None
+
+
+class JiboChargingSensor(JiboTelemetrySensor):
+    _attr_options = ["Charging", "Not Charging", "Not Plugged In"]
+
+    def __init__(self, coordinator, entry, name):
+        super().__init__(coordinator, entry, name, "charging_state", "Charging State", SensorDeviceClass.ENUM, None)
+        self._attr_state_class = None
+        self._attr_suggested_display_precision = None
+        self._attr_icon = "mdi:battery-charging"
