@@ -3,7 +3,7 @@
   "name": "OpenJibo",
   "codeowners": ["@ZaneThePython"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["ffmpeg"],
   "documentation": "https://jibo.guide/haint",
   "integration_type": "device",
   "iot_class": "cloud_push",

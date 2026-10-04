@@ -3,10 +3,12 @@ import voluptuous as vol
 from aiohttp import web
 from homeassistant.components import webhook
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 import logging
 
-from .const import CONF_JIBO_IP, CONF_SERVER_MODE, CONF_WEBHOOK_ID, DOMAIN, PLATFORMS, is_beefy_mode
+from .const import CONF_COMMAND_SECRET, CONF_JIBO_IP, CONF_SERVER_MODE, CONF_WEBHOOK_ID, DOMAIN, PLATFORMS, is_beefy_mode
+from .camera_stream_client import CameraStreamClient
 from .coordinator import JiboCoordinator
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -36,6 +38,12 @@ async def async_setup_entry(hass: HomeAssistant, entry):
         "coordinator": coordinator,
     }
 
+    if is_beefy_mode(entry.data.get(CONF_SERVER_MODE)) and entry.data.get(CONF_COMMAND_SECRET):
+        camera_client = CameraStreamClient(hass, entry)
+        hass.data[DOMAIN][entry.entry_id]["camera_stream"] = camera_client
+        # An offline robot leaves the entities unavailable rather than failing setup.
+        await camera_client.async_refresh()
+
     webhook_id = entry.data.get(CONF_WEBHOOK_ID)
     if is_beefy_mode(entry.data.get(CONF_SERVER_MODE)) and webhook_id:
         webhook.async_register(
@@ -57,6 +65,11 @@ async def async_setup_entry(hass: HomeAssistant, entry):
                 for data in hass.data[DOMAIN].values()
                 if data.get("jibo_ip") and (robot_filter is None or data["name"] == robot_filter)
             ]
+
+            for data in hass.data[DOMAIN].values():
+                camera_client = data.get("camera_stream")
+                if data.get("jibo_ip") in targets and camera_client and camera_client.data and camera_client.data.get("state") != "off":
+                    raise HomeAssistantError("Stop Jibo's camera stream before asking him to speak")
 
             if not targets:
                 _LOGGER.warning(
@@ -140,6 +153,8 @@ async def async_unload_entry(hass: HomeAssistant, entry):
 
     if unloaded:
         entry_data = hass.data[DOMAIN].pop(entry.entry_id, None)
+        if entry_data and (camera_client := entry_data.get("camera_stream")):
+            await camera_client.async_close()
         if entry_data and (coordinator := entry_data.get("coordinator")):
             await coordinator.async_shutdown()
 

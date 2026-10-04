@@ -50,3 +50,14 @@ Run the mocked receiver and reconnect tests from this repository with:
 ```sh
 python3 -m unittest discover -s tests -v
 ```
+# Jibo camera streaming
+
+Native BE/BEacon pairing provides a Camera entity and **Start Camera Stream**,
+**Stop Camera Stream**, and **Toggle Camera Stream** buttons on the existing
+Jibo device. HA must reach Jibo locally on port 8123 and have its ffmpeg
+integration available. Viewing the Camera does not start capture.
+
+The robot implementation currently requires hardware acceptance before Start
+is enabled. See `BEam/docs/camera-streaming.md` in the BEcosystem workspace for
+the validation procedure. Streaming performance has not yet been tested on a
+real Jibo. Cloud-only OpenJibo pairings do not expose these local camera entities.
