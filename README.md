@@ -50,6 +50,13 @@ Run the mocked receiver and reconnect tests from this repository with:
 ```sh
 python3 -m unittest discover -s tests -v
 ```
+# Jibo battery
+
+Native BE/BEacon pairing adds a **Battery** percentage sensor to the existing
+Jibo device. It refreshes every 30 seconds using the pairing credentials and
+follows robot IP updates. Missing readings or connection failures mark the
+sensor unavailable. Update BEam as well as this integration to enable it.
+
 # Jibo camera streaming
 
 Native BE/BEacon pairing provides a Camera entity and **Start Camera Stream**,

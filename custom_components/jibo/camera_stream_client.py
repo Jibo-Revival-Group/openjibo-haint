@@ -31,7 +31,7 @@ class CameraStreamClient(DataUpdateCoordinator[dict]):
         self._last_ip: str | None = None
         self._closed = False
 
-    def endpoint(self, resource: str) -> str:
+    def endpoint(self, resource: str, *, api: str = "camera-stream") -> str:
         ip = self.entry.data.get(CONF_JIBO_IP, "")
         if not isinstance(ip, str) or not ip:
             raise HomeAssistantError("Jibo's local address is unavailable")
@@ -42,7 +42,7 @@ class CameraStreamClient(DataUpdateCoordinator[dict]):
             if len(ip) > 253 or not re.fullmatch(r"[A-Za-z0-9.-]+", ip):
                 raise HomeAssistantError("Jibo's local address is invalid") from None
             host = ip
-        return f"http://{host}:{BEACON_PORT}/api/camera-stream/{resource}"
+        return f"http://{host}:{BEACON_PORT}/api/{api}/{resource}".rstrip("/")
 
     def headers(self) -> dict[str, str]:
         secret = self.entry.data.get(CONF_COMMAND_SECRET)

@@ -1,5 +1,5 @@
 DOMAIN = "jibo"
-PLATFORMS = ["binary_sensor", "button", "camera"]
+PLATFORMS = ["binary_sensor", "button", "camera", "sensor"]
 
 CONF_SERVER_URL = "server_url"
 CONF_SERVER_MODE = "server_mode"
