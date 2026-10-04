@@ -83,8 +83,14 @@ module("homeassistant.components.camera").Camera = Camera
 module("homeassistant.components.button").ButtonEntity = type("ButtonEntity", (), {})
 sensor_module = module("homeassistant.components.sensor")
 sensor_module.SensorEntity = type("SensorEntity", (), {})
-sensor_module.SensorDeviceClass = types.SimpleNamespace(BATTERY="battery")
+sensor_module.SensorDeviceClass = types.SimpleNamespace(BATTERY="battery", TEMPERATURE="temperature", VOLTAGE="voltage")
 sensor_module.SensorStateClass = types.SimpleNamespace(MEASUREMENT="measurement")
+binary_module = module("homeassistant.components.binary_sensor")
+binary_module.BinarySensorEntity = type("BinarySensorEntity", (), {})
+binary_module.BinarySensorDeviceClass = types.SimpleNamespace(CONNECTIVITY="connectivity", PLUG="plug", OPENING="opening")
+module("homeassistant.config_entries").ConfigEntry = object
+module("homeassistant.core").HomeAssistant = object
+module("homeassistant.helpers.entity_platform").AddEntitiesCallback = object
 module("homeassistant.components.ffmpeg").get_ffmpeg_manager = lambda hass: types.SimpleNamespace(binary="ffmpeg")
 
 if not HTTP_AVAILABLE:
@@ -96,7 +102,9 @@ if not HTTP_AVAILABLE:
 from custom_components.jibo.button import JiboCameraButton, async_setup_entry as setup_buttons
 from custom_components.jibo.camera import JiboCamera, INACTIVE_IMAGE
 from custom_components.jibo.camera_stream_client import CameraStreamClient
-from custom_components.jibo.sensor import JiboBatterySensor, async_setup_entry as setup_sensors
+from custom_components.jibo.sensor import JiboTelemetrySensor, SENSORS, async_setup_entry as setup_sensors
+from custom_components.jibo.telemetry import JiboTelemetry
+from custom_components.jibo.binary_sensor import JiboTelemetryBinarySensor
 from custom_components.jibo.const import CONF_COMMAND_SECRET, CONF_JIBO_IP, DOMAIN
 
 
@@ -189,6 +197,7 @@ class CameraHTTP(unittest.IsolatedAsyncioTestCase):
         self.requests = []
         self.state = "off"
         self.battery = 72.5
+        self.telemetry_values = {"plugged_in": False, "hatch_open": False, "battery_temperature": 30, "main_board_temperature": 40, "cpu_temperature": 50, "system_voltage": 12.1, "fan_speed": 25, "speaker_volume": 60}
         self.reject = False
         self.disconnect = asyncio.Event()
 
@@ -196,8 +205,8 @@ class CameraHTTP(unittest.IsolatedAsyncioTestCase):
             self.requests.append((request.method, request.path, request.headers.get("Authorization")))
             if self.reject:
                 return web.json_response({"error": "Turn off privacy mode before streaming"}, status=409)
-            if request.path == "/api/battery":
-                return web.json_response({"battery": self.battery})
+            if request.path == "/api/telemetry":
+                return web.json_response({"battery": self.battery, **self.telemetry_values})
             if request.path.endswith("video"):
                 response = web.StreamResponse(headers={"Content-Type": "video/webm"})
                 await response.prepare(request)
@@ -211,7 +220,7 @@ class CameraHTTP(unittest.IsolatedAsyncioTestCase):
 
         app = web.Application()
         app.router.add_route("*", "/api/camera-stream/{resource}", handle)
-        app.router.add_get("/api/battery", handle)
+        app.router.add_get("/api/telemetry", handle)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -233,39 +242,65 @@ class CameraHTTP(unittest.IsolatedAsyncioTestCase):
         self.port_patch.stop()
 
     async def test_battery_polling_auth_validation_and_ip_change(self):
-        sensor = JiboBatterySensor(self.client, self.entry, "Jibo")
+        coordinator = JiboTelemetry(self.client.hass, self.client, self.entry)
+        sensor = JiboTelemetrySensor(coordinator, self.entry, "Jibo", *SENSORS[0])
         self.assertEqual(sensor._attr_unique_id, "robot-1_battery")
         self.assertEqual(sensor._attr_device_info["identifiers"], {(DOMAIN, "robot-1")})
         for value in [72.5, 0, 100]:
             self.battery = value
-            await sensor.async_update()
-            self.assertTrue(sensor._attr_available)
-            self.assertEqual(sensor._attr_native_value, value)
+            await coordinator.async_refresh()
+            self.assertTrue(sensor.available)
+            self.assertEqual(sensor.native_value, value)
         for value in [None, True, "50", -1, 101]:
             self.battery = value
-            await sensor.async_update()
-            self.assertFalse(sensor._attr_available)
-            self.assertIsNone(sensor._attr_native_value)
+            await coordinator.async_refresh()
+            self.assertFalse(sensor.available)
+            self.assertIsNone(sensor.native_value)
         self.battery = 50
         self.reject = True
-        await sensor.async_update()
-        self.assertFalse(sensor._attr_available)
+        await coordinator.async_refresh()
+        self.assertFalse(sensor.available)
         self.reject = False
-        await sensor.async_update()
-        self.assertTrue(sensor._attr_available)
-        self.assertTrue(all(request == ("GET", "/api/battery", "Bearer private-secret") for request in self.requests))
+        await coordinator.async_refresh()
+        self.assertTrue(sensor.available)
+        self.assertTrue(all(request == ("GET", "/api/telemetry", "Bearer private-secret") for request in self.requests))
         self.entry.data[CONF_JIBO_IP] = "bad/address"
-        await sensor.async_update()
-        self.assertFalse(sensor._attr_available)
+        await coordinator.async_refresh()
+        self.assertFalse(sensor.available)
         self.entry.data[CONF_JIBO_IP] = "127.0.0.1"
-        await sensor.async_update()
-        self.assertTrue(sensor._attr_available)
+        await coordinator.async_refresh()
+        self.assertTrue(sensor.available)
 
     async def test_no_battery_entity_for_cloud_pairing(self):
         hass = types.SimpleNamespace(data={DOMAIN: {self.entry.entry_id: {"name": "Jibo"}}})
         added = []
         await setup_sensors(hass, self.entry, lambda entities, **kwargs: added.extend(entities))
         self.assertEqual(added, [])
+
+    async def test_shared_telemetry_entities_and_individual_failures(self):
+        coordinator = JiboTelemetry(self.client.hass, self.client, self.entry)
+        await coordinator.async_refresh()
+        sensors = [JiboTelemetrySensor(coordinator, self.entry, "Jibo", *description) for description in SENSORS]
+        plugged = JiboTelemetryBinarySensor(coordinator, self.entry, "Jibo", "plugged_in", "Plugged in", "plug")
+        hatch = JiboTelemetryBinarySensor(coordinator, self.entry, "Jibo", "hatch_open", "Hatch State", "opening")
+        self.assertEqual(len(sensors), 7)
+        self.assertTrue(all(sensor.available for sensor in sensors))
+        self.assertEqual([sensor.native_value for sensor in sensors], [72.5, 30, 40, 50, 12.1, 25, 60])
+        self.assertTrue(plugged.available)
+        self.assertFalse(plugged.is_on)
+        self.assertFalse(hatch.is_on)
+        self.assertEqual(len(self.requests), 1, "All nine entities share one request")
+        self.telemetry_values.update({"hatch_open": True, "plugged_in": True, "cpu_temperature": None, "fan_speed": 101})
+        await coordinator.async_refresh()
+        self.assertTrue(plugged.is_on)
+        self.assertTrue(hatch.is_on)
+        self.assertFalse(sensors[3].available)
+        self.assertFalse(sensors[5].available)
+        self.assertTrue(sensors[1].available)
+        self.reject = True
+        await coordinator.async_refresh()
+        self.assertTrue(all(not sensor.available for sensor in sensors + [plugged, hatch]))
+        await coordinator.async_shutdown()
 
     async def test_explicit_controls_headers_and_local_stop_status(self):
         await self.client.async_refresh()

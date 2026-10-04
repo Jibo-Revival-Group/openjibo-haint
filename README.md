@@ -50,10 +50,14 @@ Run the mocked receiver and reconnect tests from this repository with:
 ```sh
 python3 -m unittest discover -s tests -v
 ```
-# Jibo battery
+# Jibo telemetry
 
 Native BE/BEacon pairing adds a **Battery** percentage sensor to the existing
-Jibo device. It refreshes every 30 seconds using the pairing credentials and
+Jibo device, alongside **Plugged in**, **Battery Temp**, **Main board Temp**,
+**CPU Temp**, **System Voltage**, **Fan Speed**, **Speaker Volume**, and
+**Hatch State**. Temperatures use °C, voltage uses V, and fan speed and speaker
+volume use percentages. Hatch State shows open/closed; Plugged in shows power
+connection status. All readings share one refresh every 30 seconds using the pairing credentials and
 follows robot IP updates. Missing readings or connection failures mark the
 sensor unavailable. Update BEam as well as this integration to enable it.
 

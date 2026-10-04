@@ -9,6 +9,7 @@ import logging
 
 from .const import CONF_COMMAND_SECRET, CONF_JIBO_IP, CONF_SERVER_MODE, CONF_WEBHOOK_ID, DOMAIN, PLATFORMS, is_beefy_mode
 from .camera_stream_client import CameraStreamClient
+from .telemetry import JiboTelemetry
 from .coordinator import JiboCoordinator
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -43,6 +44,9 @@ async def async_setup_entry(hass: HomeAssistant, entry):
         hass.data[DOMAIN][entry.entry_id]["camera_stream"] = camera_client
         # An offline robot leaves the entities unavailable rather than failing setup.
         await camera_client.async_refresh()
+        telemetry = JiboTelemetry(hass, camera_client, entry)
+        hass.data[DOMAIN][entry.entry_id]["telemetry"] = telemetry
+        await telemetry.async_refresh()
 
     webhook_id = entry.data.get(CONF_WEBHOOK_ID)
     if is_beefy_mode(entry.data.get(CONF_SERVER_MODE)) and webhook_id:
@@ -153,6 +157,8 @@ async def async_unload_entry(hass: HomeAssistant, entry):
 
     if unloaded:
         entry_data = hass.data[DOMAIN].pop(entry.entry_id, None)
+        if entry_data and (telemetry := entry_data.get("telemetry")):
+            await telemetry.async_shutdown()
         if entry_data and (camera_client := entry_data.get("camera_stream")):
             await camera_client.async_close()
         if entry_data and (coordinator := entry_data.get("coordinator")):

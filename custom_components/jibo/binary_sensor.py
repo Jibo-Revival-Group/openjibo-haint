@@ -9,6 +9,7 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_JIBO_IP, DOMAIN
 
@@ -29,6 +30,36 @@ async def async_setup_entry(
         [JiboConnectivitySensor(entry, data.get("jibo_ip", ""), data["name"], data.get("coordinator"))],
         update_before_add=True,
     )
+    telemetry = data.get("telemetry")
+    if telemetry is not None:
+        async_add_entities([
+            JiboTelemetryBinarySensor(telemetry, entry, data["name"], "plugged_in", "Plugged in", BinarySensorDeviceClass.PLUG),
+            JiboTelemetryBinarySensor(telemetry, entry, data["name"], "hatch_open", "Hatch State", BinarySensorDeviceClass.OPENING),
+        ])
+
+
+class JiboTelemetryBinarySensor(CoordinatorEntity, BinarySensorEntity):
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator, entry, name, key, label, device_class):
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_unique_id = f"{entry.entry_id}_{key}"
+        self._attr_name = label
+        self._attr_device_class = device_class
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)}, "name": name,
+            "manufacturer": "Jibo Inc.", "model": "Jibo",
+        }
+
+    @property
+    def available(self):
+        return bool(self.coordinator.last_update_success and self.coordinator.data
+                    and self.coordinator.data.get(self._key) is not None)
+
+    @property
+    def is_on(self):
+        return self.coordinator.data.get(self._key) if self.available else None
 
 
 class JiboConnectivitySensor(BinarySensorEntity):
