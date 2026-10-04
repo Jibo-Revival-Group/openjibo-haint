@@ -52,10 +52,14 @@ python3 -m unittest discover -s tests -v
 ```
 # Jibo telemetry
 
+**IP Address** shows Jibo’s current configured address for all pairing modes,
+including robot IP updates, refreshed every 30 seconds. Without a configured
+address, the sensor shows unknown. The retired **Head Touch** entity is removed
+automatically when the integration reloads.
+
 **Charging State** reports Charging, Not Charging, or Not Plugged In.
 **Microphone RMS** reports the SDK's raw `db_rms` waveform level in dB; it is
-not calibrated environmental sound-pressure level (dB SPL). **Head Touch**
-reports whether any head pad is touched. Audio and touch share a separate
+not calibrated environmental sound-pressure level (dB SPL). Audio uses a separate
 one-second refresh, while the other readings refresh every 30 seconds.
 **Sleeping** uses the same one-second refresh and reports on during nighttime
 sleep or a daytime nap, and off when awake or running another skill. An

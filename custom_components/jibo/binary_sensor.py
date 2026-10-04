@@ -25,6 +25,15 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    retired_entity = registry.async_get_entity_id(
+        "binary_sensor", DOMAIN, f"{entry.entry_id}_head_touch"
+    )
+    if retired_entity is not None:
+        registry.async_remove(retired_entity)
+
     data = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [JiboConnectivitySensor(entry, data.get("jibo_ip", ""), data["name"], data.get("coordinator"))],
@@ -39,7 +48,6 @@ async def async_setup_entry(
     activity = data.get("activity")
     if activity is not None:
         async_add_entities([
-            JiboTelemetryBinarySensor(activity, entry, data["name"], "head_touch", "Head Touch", None),
             JiboTelemetryBinarySensor(activity, entry, data["name"], "sleeping", "Sleeping", None),
         ])
 

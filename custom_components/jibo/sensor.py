@@ -1,13 +1,18 @@
-"""Local Jibo battery percentage."""
+"""Jibo address and telemetry sensors."""
+
+from datetime import timedelta
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_JIBO_IP, DOMAIN
+
+SCAN_INTERVAL = timedelta(seconds=30)
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
     data = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities([JiboIPAddressSensor(entry, data["name"])])
     # Local authenticated entities are only supported on the native pairing path.
     coordinator = data.get("telemetry")
     if coordinator is not None:
@@ -65,3 +70,27 @@ class JiboChargingSensor(JiboTelemetrySensor):
         self._attr_state_class = None
         self._attr_suggested_display_precision = None
         self._attr_icon = "mdi:battery-charging"
+
+
+class JiboIPAddressSensor(SensorEntity):
+    """Expose the current robot address, including authenticated IP updates."""
+
+    _attr_has_entity_name = True
+    _attr_name = "IP Address"
+    _attr_icon = "mdi:ip-network"
+    _attr_should_poll = True
+
+    def __init__(self, entry, name):
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_ip_address"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)}, "name": name,
+            "manufacturer": "Jibo Inc.", "model": "Jibo",
+        }
+
+    @property
+    def native_value(self):
+        return self._entry.data.get(CONF_JIBO_IP) or None
+
+    async def async_update(self):
+        """Polling publishes changes to the config entry's robot address."""

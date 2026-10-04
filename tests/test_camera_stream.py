@@ -109,6 +109,42 @@ from custom_components.jibo.binary_sensor import JiboTelemetryBinarySensor
 from custom_components.jibo.const import CONF_COMMAND_SECRET, CONF_JIBO_IP, DOMAIN
 
 
+class SensorEntities(unittest.IsolatedAsyncioTestCase):
+    async def test_address_setup_and_changes(self):
+        entry = types.SimpleNamespace(entry_id="robot-1", data={CONF_JIBO_IP: "192.168.1.20"})
+        hass = types.SimpleNamespace(data={DOMAIN: {entry.entry_id: {"name": "Jibo"}}})
+        added = []
+        await setup_sensors(hass, entry, added.extend)
+        self.assertEqual(len(added), 1)
+        self.assertEqual(added[0].native_value, "192.168.1.20")
+        entry.data[CONF_JIBO_IP] = "192.168.1.21"
+        await added[0].async_update()
+        self.assertEqual(added[0].native_value, "192.168.1.21")
+        entry.data.clear()
+        self.assertIsNone(added[0].native_value)
+
+    async def test_retired_head_touch_registry_cleanup(self):
+        from unittest.mock import Mock
+        from custom_components.jibo.binary_sensor import async_setup_entry
+
+        entry = types.SimpleNamespace(entry_id="robot-1", data={})
+        activity = types.SimpleNamespace(data={"sleeping": False}, last_update_success=True)
+        hass = types.SimpleNamespace(data={DOMAIN: {entry.entry_id: {
+            "name": "Jibo", "activity": activity,
+        }}})
+        registry = Mock()
+        registry.async_get_entity_id.return_value = "binary_sensor.jibo_head_touch"
+        registry_module = types.ModuleType("homeassistant.helpers.entity_registry")
+        registry_module.async_get = lambda hass: registry
+        added = []
+        with patch.dict(sys.modules, {"homeassistant.helpers.entity_registry": registry_module}):
+            with patch.object(sys.modules["homeassistant.helpers"], "entity_registry", registry_module, create=True):
+                await async_setup_entry(hass, entry, lambda entities, **kwargs: added.extend(entities))
+        registry.async_get_entity_id.assert_called_once_with("binary_sensor", DOMAIN, "robot-1_head_touch")
+        registry.async_remove.assert_called_once_with("binary_sensor.jibo_head_touch")
+        self.assertEqual([entity._attr_unique_id for entity in added], ["robot-1_connectivity", "robot-1_sleeping"])
+
+
 class CameraEntities(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.entry = types.SimpleNamespace(entry_id="robot-1", title="Jibo", data={})
@@ -281,7 +317,17 @@ class CameraHTTP(unittest.IsolatedAsyncioTestCase):
         hass = types.SimpleNamespace(data={DOMAIN: {self.entry.entry_id: {"name": "Jibo"}}})
         added = []
         await setup_sensors(hass, self.entry, lambda entities, **kwargs: added.extend(entities))
-        self.assertEqual(added, [])
+        self.assertEqual(len(added), 1)
+        address = added[0]
+        self.assertEqual(address._attr_name, "IP Address")
+        self.assertEqual(address._attr_unique_id, "robot-1_ip_address")
+        self.entry.data[CONF_JIBO_IP] = "192.168.1.20"
+        self.assertEqual(address.native_value, "192.168.1.20")
+        self.entry.data[CONF_JIBO_IP] = "192.168.1.21"
+        await address.async_update()
+        self.assertEqual(address.native_value, "192.168.1.21")
+        self.entry.data.pop(CONF_JIBO_IP)
+        self.assertIsNone(address.native_value)
 
     async def test_shared_telemetry_entities_and_individual_failures(self):
         coordinator = JiboTelemetry(self.client.hass, self.client, self.entry)
@@ -331,7 +377,7 @@ class CameraHTTP(unittest.IsolatedAsyncioTestCase):
         }}})
         added = []
         await setup_sensors(hass, self.entry, lambda entities, **kwargs: added.extend(entities))
-        self.assertEqual(len(added), 9)
+        self.assertEqual(len(added), 10)
         self.assertEqual(added[-1]._attr_name, "Microphone RMS")
         await telemetry.async_shutdown()
         await activity.async_shutdown()
